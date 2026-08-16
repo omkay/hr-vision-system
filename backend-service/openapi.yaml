@@ -1,0 +1,1052 @@
+openapi: 3.0.3
+info:
+  title: Hr_SmartPay API
+  description: >
+    HR management backend (Laravel 12 + Sanctum). Covers authentication,
+    employees, cameras, zones, users, and activity logs, as implemented on
+    the `University` branch. Does not include the planned vision-service
+    integration endpoints (attendance checkin, camera processing) — see
+    INTEGRATION-TODO-multi-photo-enrollment.md for those, they are not
+    built yet.
+  version: "1.0.0"
+servers:
+  - url: /api
+    description: Default Laravel API prefix, no versioning in the path.
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Auth
+  - name: Employees
+  - name: Cameras
+  - name: Zones
+  - name: Users
+  - name: Logs
+
+paths:
+  /login:
+    post:
+      tags: [Auth]
+      summary: Log in and obtain an access token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_name, password]
+              properties:
+                user_name:
+                  type: string
+                password:
+                  type: string
+                  format: password
+      responses:
+        "200":
+          description: Login succeeded. Any previous tokens for this user are revoked first (single active session).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+                    description: Sanctum plain-text token, named "desktop-app".
+                  user:
+                    $ref: "#/components/schemas/User"
+        "401":
+          description: Invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              example:
+                message: اسم المستخدم او كلمة المرور غير صحية.
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /logout:
+    get:
+      tags: [Auth]
+      summary: Log out (revoke all of the caller's tokens)
+      responses:
+        "200":
+          description: Logged out.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /employees/add:
+    post:
+      tags: [Employees]
+      summary: Create an employee
+      description: Roles allowed — HR Manager, CEO, HR Employee.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: "#/components/schemas/EmployeeInput"
+      responses:
+        "201":
+          description: Employee created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: تم إضافة الموظف بنجاح
+                  employee:
+                    $ref: "#/components/schemas/Employee"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /employees/get:
+    get:
+      tags: [Employees]
+      summary: List all employees
+      description: Roles allowed — HR Manager, CEO, HR Employee. No pagination, no filters.
+      responses:
+        "200":
+          description: List of employees, most recent first, each with assigned zones.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: الموظفين
+                  employees:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/EmployeeWithZones"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /employees/update/{id}:
+    post:
+      tags: [Employees]
+      summary: Update an employee
+      description: Roles allowed — HR Manager, CEO only (not HR Employee).
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: "#/components/schemas/EmployeeInput"
+      responses:
+        "200":
+          description: Employee updated. A new photo replaces and deletes the old file.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: تم تعديل بيانات الموظف بنجاح
+                  employee:
+                    $ref: "#/components/schemas/EmployeeUpdateResult"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Employee not found (default Laravel ModelNotFoundException response).
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /employees/delete/{id}:
+    delete:
+      tags: [Employees]
+      summary: Soft-delete an employee
+      description: Roles allowed — HR Manager, CEO only. Also removes the stored photo file, if any.
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: Employee deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              example:
+                message: تم حذف الموظف بنجاح
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Employee not found.
+
+  /camera/add:
+    post:
+      tags: [Cameras]
+      summary: Register a camera (uploads a video file, not a live stream)
+      description: Roles allowed — HR Manager, CEO, HR Employee.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [name, zone_id, video]
+              properties:
+                name:
+                  type: string
+                  maxLength: 255
+                zone_id:
+                  type: integer
+                  description: Must reference an existing zone.
+                video:
+                  type: string
+                  format: binary
+                  description: mp4, mov, avi, or mkv. Max 500 MB.
+      responses:
+        "201":
+          description: Camera created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: تمت إضافة الكاميرا بنجاح
+                  camera:
+                    $ref: "#/components/schemas/Camera"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /camera/get:
+    get:
+      tags: [Cameras]
+      summary: List all cameras
+      description: Roles allowed — HR Manager, CEO, HR Employee. No pagination.
+      responses:
+        "200":
+          description: List of cameras, most recent first, each with its zone.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: الكاميرات
+                  cameras:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Camera"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /camera/update/{id}:
+    post:
+      tags: [Cameras]
+      summary: Update a camera
+      description: Roles allowed — HR Manager, CEO, HR Employee. name and zone_id are always overwritten; video is optional (replaces and deletes the old file only if a new one is sent).
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [name, zone_id]
+              properties:
+                name:
+                  type: string
+                  maxLength: 255
+                zone_id:
+                  type: integer
+                video:
+                  type: string
+                  format: binary
+                  nullable: true
+                  description: mp4, mov, avi, or mkv. Max 500 MB. Omit to keep the existing video.
+      responses:
+        "200":
+          description: Camera updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: تم تعديل الكاميرا بنجاح
+                  camera:
+                    $ref: "#/components/schemas/Camera"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Camera not found.
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /camera/delete/{id}:
+    delete:
+      tags: [Cameras]
+      summary: Delete a camera
+      description: Roles allowed — HR Manager, CEO, HR Employee. Hard delete (no soft deletes on cameras); also removes the stored video file.
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: Camera deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              example:
+                message: تم حذف الكاميرا بنجاح
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Camera not found.
+
+  /zone/add:
+    post:
+      tags: [Zones]
+      summary: Create a zone
+      description: Roles allowed — HR Manager, CEO, HR Employee.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  description: Must be unique among zone names.
+      responses:
+        "200":
+          description: Zone created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: تم إضافة المنطقة بنجاح
+                  Zone:
+                    $ref: "#/components/schemas/Zone"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /zone/get:
+    get:
+      tags: [Zones]
+      summary: List all zones
+      description: Roles allowed — HR Manager, CEO, HR Employee. No pagination.
+      responses:
+        "200":
+          description: List of zones, most recent first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: المناطق
+                  Zone:
+                    type: array
+                    description: Field is capitalized "Zone" despite being an array — matches the actual API response, not a documentation typo.
+                    items:
+                      $ref: "#/components/schemas/Zone"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /zone/update/{id}:
+    put:
+      tags: [Zones]
+      summary: Update a zone's name
+      description: >
+        Roles allowed — HR Manager, CEO only. Known behavior quirk: validation
+        marks `name` as `sometimes`, but the controller always writes
+        `$request->name` to the model regardless — omitting `name` entirely
+        will overwrite it with null. Send `name` on every call.
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+      responses:
+        "200":
+          description: Zone updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: تم تحديث بيانات المنطقة بنجاح
+                  Zone:
+                    $ref: "#/components/schemas/Zone"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Zone not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              example:
+                message: المنطقة غير موجود
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /zone/delete/{id}:
+    delete:
+      tags: [Zones]
+      summary: Delete a zone
+      description: Roles allowed — HR Manager, CEO only. Hard delete; cascades to delete any cameras and employee_zone links referencing this zone (FK onDelete cascade).
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: Zone deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              example:
+                message: تم حذف المنطقة بنجاح
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Zone not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              example:
+                message: المنطقة غير موجودة
+
+  /employee/zone/sync:
+    post:
+      tags: [Zones, Employees]
+      summary: Set an employee's zone assignments
+      description: >
+        Roles allowed — HR Manager, CEO, HR Employee. Full sync, not additive:
+        the given `zone_ids` list becomes the employee's complete set of zone
+        assignments — any zones not listed are unassigned. `zone_ids` is not
+        itself required; omitting it entirely clears all zone assignments for
+        that employee.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [employee_id]
+              properties:
+                employee_id:
+                  type: integer
+                zone_ids:
+                  type: array
+                  items:
+                    type: integer
+                  description: Each id must reference an existing zone. Omit or send an empty array to clear all assignments.
+      responses:
+        "200":
+          description: Zones synced.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: تمت مزامنة المناطق بنجاح
+                  employee:
+                    type: object
+                    properties:
+                      id:
+                        type: integer
+                      name:
+                        type: string
+                      zones:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/ZoneRef"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Employee not found.
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /user/register:
+    post:
+      tags: [Users]
+      summary: Create a user account
+      description: Roles allowed — HR Manager, CEO only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_name, password, password_confirmation, role_id]
+              properties:
+                user_name:
+                  type: string
+                  description: Must be unique.
+                password:
+                  type: string
+                  format: password
+                  minLength: 6
+                password_confirmation:
+                  type: string
+                  format: password
+                  description: Required by Laravel's `confirmed` rule — must match `password`.
+                role_id:
+                  type: integer
+                  description: Must reference an existing role.
+      responses:
+        "200":
+          description: User created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: تم إنشاء المستخدم بنجاح
+                  user:
+                    $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /user/get:
+    get:
+      tags: [Users]
+      summary: List user accounts
+      description: >
+        Roles allowed — HR Manager, CEO only. CEO callers (role_id 3) see every
+        user; non-CEO callers never see CEO accounts in the list. Note the
+        response's `role_id` field is actually the role display name (e.g.
+        "HR Manager"), not a numeric id — a naming quirk in the source, kept
+        as-is here.
+      responses:
+        "200":
+          description: List of users.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: المستخدمين
+                  users:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: integer
+                        role_id:
+                          type: string
+                          description: Role display name despite the field name (e.g. "HR Manager", "CEO", "HR Employee").
+                        user_name:
+                          type: string
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /user/update/{id}:
+    put:
+      tags: [Users]
+      summary: Update a user's username and/or role
+      description: >
+        Roles allowed — HR Manager, CEO only. Blocked entirely for CEO target
+        accounts (role_id 3) regardless of caller — returns 401 if the target
+        user is a CEO. Revokes the target user's tokens after a successful
+        update, forcing re-login.
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                user_name:
+                  type: string
+                  description: Must be unique (ignoring this user's own current value).
+                role_id:
+                  type: integer
+                  description: Must reference an existing role.
+      responses:
+        "200":
+          description: User updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: تم تحديث بيانات المستخدم بنجاح
+                  user:
+                    $ref: "#/components/schemas/User"
+        "401":
+          description: >
+            Either the standard idle/unauthenticated response, or a
+            business-rule 401 when the target account is a CEO (message:
+            "لا يمكنك تعديل بيانات هذا المستخدم").
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              example:
+                message: المستخدم غير موجود
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /user/delete/{id}:
+    delete:
+      tags: [Users]
+      summary: Soft-delete a user account
+      description: Roles allowed — HR Manager, CEO only. A user cannot delete their own account.
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: User deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              example:
+                message: تم حذف الموظف بنجاح
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: >
+            Either the standard role-check 403, or a business-rule 403 when
+            attempting to delete your own account (message: "لا يمكنك حذف
+            حسابك").
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "404":
+          description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              example:
+                message: الحساب غير موجود
+
+  /user/reset/{id}:
+    put:
+      tags: [Users]
+      summary: Reset a user's password
+      description: Roles allowed — CEO only. Revokes the target user's tokens after resetting.
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [new_password, new_password_confirmation]
+              properties:
+                new_password:
+                  type: string
+                  format: password
+                  minLength: 6
+                new_password_confirmation:
+                  type: string
+                  format: password
+      responses:
+        "200":
+          description: Password reset.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              example:
+                message: تم تعديل كلمة المرور بنجاح
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: User not found.
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /logs:
+    get:
+      tags: [Logs]
+      summary: List activity log entries
+      description: >
+        Roles allowed — CEO only. Backed by Spatie activitylog. Fixed page
+        size of 20 (not configurable via query param in the current
+        implementation, though Laravel's default `?page=N` pagination
+        parameter works since pagination is framework-driven).
+      parameters:
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+          description: Standard Laravel pagination page number (framework default behavior, not explicitly validated by the controller).
+      responses:
+        "200":
+          description: Paginated activity log.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Logs List
+                  pagination:
+                    type: object
+                    properties:
+                      current_page:
+                        type: integer
+                      last_page:
+                        type: integer
+                      per_page:
+                        type: integer
+                        example: 20
+                      total:
+                        type: integer
+                      has_more:
+                        type: boolean
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/LogEntry"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >
+        Laravel Sanctum personal access token, returned as `token` from
+        POST /login. Every protected route also enforces a 60-minute idle
+        timeout independent of standard token validity (see 401 responses).
+
+  parameters:
+    IdPath:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+
+  responses:
+    Unauthenticated:
+      description: >
+        Missing/invalid token (Sanctum default: `{"message":"Unauthenticated."}`),
+        or the token was revoked for being idle more than 60 minutes
+        (message: "انتهت صلاحية الجلسة بسبب عدم النشاط، يرجى تسجيل الدخول مجدداً.").
+        These are two distinct causes with the same status code.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/MessageResponse"
+    Forbidden:
+      description: >
+        Authenticated, but the user's role is not in the list allowed for
+        this route (message: "ليس لديك صلاحية الوصول لهذه العملية").
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/MessageResponse"
+    ValidationError:
+      description: Request failed validation.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+              errors:
+                type: object
+                additionalProperties:
+                  type: array
+                  items:
+                    type: string
+
+  schemas:
+    MessageResponse:
+      type: object
+      properties:
+        message:
+          type: string
+
+    EmployeeInput:
+      type: object
+      required: [name, Administration, job_num, position, start_date, start_time, end_time]
+      properties:
+        name:
+          type: string
+          maxLength: 255
+        Administration:
+          type: string
+          maxLength: 255
+          description: Department/administration name. Field name capitalized exactly as in the API — not a typo to fix.
+        job_num:
+          type: integer
+          description: Must be unique among non-deleted employees.
+        position:
+          type: string
+          maxLength: 255
+        start_date:
+          type: string
+          format: date
+        start_time:
+          type: string
+          example: "09:00"
+        end_time:
+          type: string
+          example: "17:00"
+        phone_num:
+          type: string
+          maxLength: 50
+          nullable: true
+        image:
+          type: string
+          format: binary
+          nullable: true
+          description: jpg, jpeg, png, or webp. Max 2 MB. Single photo only — see INTEGRATION-TODO for the planned multi-photo upgrade.
+
+    Employee:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        Administration:
+          type: string
+        job_num:
+          type: integer
+        position:
+          type: string
+        start_date:
+          type: string
+          format: date
+        start_time:
+          type: string
+        end_time:
+          type: string
+        phone_num:
+          type: string
+          nullable: true
+        image:
+          type: string
+          nullable: true
+          description: Storage-relative path (e.g. "employees/xyz.png"), not a full URL, on the create response.
+
+    EmployeeWithZones:
+      allOf:
+        - $ref: "#/components/schemas/Employee"
+        - type: object
+          properties:
+            image_url:
+              type: string
+              nullable: true
+              description: Full public asset URL, unlike the create response's raw path.
+            zones:
+              type: array
+              items:
+                $ref: "#/components/schemas/ZoneRef"
+
+    EmployeeUpdateResult:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        Administration:
+          type: string
+        job_num:
+          type: integer
+        position:
+          type: string
+        start_date:
+          type: string
+          format: date
+        start_time:
+          type: string
+        end_time:
+          type: string
+        phone_num:
+          type: string
+          nullable: true
+        image_url:
+          type: string
+          nullable: true
+          description: Full public asset URL (differs from the create response, which returns a raw path in "image").
+
+    ZoneRef:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+
+    Zone:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        created_at:
+          type: string
+        updated_at:
+          type: string
+
+    Camera:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        video_url:
+          type: string
+          nullable: true
+        zone:
+          description: >
+            Shape is inconsistent across endpoints: add/update responses
+            return the zone name as a plain string, while get_cameras
+            returns a nested {id, name} object. Documented as a union to
+            match actual behavior.
+          oneOf:
+            - type: string
+            - $ref: "#/components/schemas/ZoneRef"
+
+    User:
+      type: object
+      properties:
+        id:
+          type: integer
+        role_id:
+          type: integer
+        user_name:
+          type: string
+      description: password is always hidden by the model's $hidden array — never present in any response.
+
+    LogEntry:
+      type: object
+      properties:
+        id:
+          type: integer
+        action:
+          type: string
+          description: Human-readable description of the logged event (Arabic).
+        event:
+          type: string
+          enum: [created, updated, deleted]
+        model:
+          type: string
+          description: Short class name of the logged model, e.g. "Employee", "User", "Zone".
+        model_id:
+          type: integer
+          nullable: true
+        by:
+          type: string
+          description: The causing user's user_name, or "System" if no causer was recorded.
+        changes:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              old:
+                nullable: true
+              new:
+                nullable: true
+        date:
+          type: string
+          example: "2026-07-26 14:05"

@@ -1,0 +1,32 @@
+# ── macOS ──
+.DS_Store
+
+# ── backend-service (Laravel) ──
+backend-service/vendor/
+backend-service/node_modules/
+backend-service/.env
+backend-service/storage/*.key
+backend-service/storage/app/public/*
+!backend-service/storage/app/public/.gitkeep
+backend-service/storage/framework/cache/*
+backend-service/storage/framework/sessions/*
+backend-service/storage/framework/views/*
+backend-service/storage/logs/*
+backend-service/bootstrap/cache/*.php
+
+# ── vision-service (Python) ──
+vision-service/venv/
+vision-service/__pycache__/
+vision-service/**/__pycache__/
+vision-service/*.py[cod]
+vision-service/*.egg-info/
+vision-service/.eggs/
+vision-service/outputs/
+vision-service/runs/
+vision-service/__marimo__/
+vision-service/*.pt
+vision-service/*.onnx
+vision-service/*.pth
+vision-service/data/
+vision-service/models/buffalo_l/
+vision-service/gallery/

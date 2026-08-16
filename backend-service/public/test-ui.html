@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Hr_SmartPay + Vision — Test UI</title>
+<style>
+  :root {
+    --bg: #f4f6f8; --card: #ffffff; --border: #d9dee3; --text: #1f2937;
+    --muted: #6b7280; --accent: #2563eb; --accent-dark: #1d4ed8;
+    --danger: #dc2626; --ok: #16a34a; --warn: #d97706;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; background: var(--bg); color: var(--text); }
+  header { background: #111827; color: #fff; padding: 14px 20px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; white-space: nowrap; }
+  header .spacer { flex: 1; }
+  header input { padding: 6px 8px; border-radius: 6px; border: 1px solid #374151; background: #1f2937; color: #fff; font-size: 13px; }
+  header button { padding: 6px 14px; border-radius: 6px; border: none; background: var(--accent); color: #fff; font-size: 13px; cursor: pointer; }
+  header button:hover { background: var(--accent-dark); }
+  #authStatus { font-size: 12px; padding: 4px 10px; border-radius: 999px; background: #374151; }
+  #authStatus.ok { background: #14532d; }
+  #authStatus.err { background: #7f1d1d; }
+
+  nav { display: flex; gap: 4px; background: #fff; border-bottom: 1px solid var(--border); padding: 0 16px; overflow-x: auto; }
+  nav button { border: none; background: none; padding: 12px 16px; font-size: 13px; cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent; white-space: nowrap; }
+  nav button.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+
+  main { padding: 20px; max-width: 1100px; margin: 0 auto; }
+  .tab { display: none; }
+  .tab.active { display: block; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; margin-bottom: 18px; }
+  .card h2 { font-size: 14px; margin: 0 0 12px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+  .field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+  .field input, .field select { padding: 7px 9px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; min-width: 150px; }
+  .field input[type=file] { min-width: 220px; }
+  .btn { padding: 8px 14px; border-radius: 6px; border: none; background: var(--accent); color: #fff; font-size: 13px; cursor: pointer; height: 34px; }
+  .btn:hover { background: var(--accent-dark); }
+  .btn.danger { background: var(--danger); }
+  .btn.ghost { background: #eef2ff; color: var(--accent); }
+  .btn:disabled { background: #9ca3af; cursor: not-allowed; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 10px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; }
+  tr:hover td { background: #fafafa; }
+  .thumb { width: 48px; height: 48px; object-fit: cover; border-radius: 6px; border: 1px solid var(--border); margin: 2px; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+  .pill.ok { background: #dcfce7; color: #166534; }
+  .pill.err { background: #fee2e2; color: #991b1b; }
+  .pill.warn { background: #fef3c7; color: #92400e; }
+  .pill.info { background: #dbeafe; color: #1e40af; }
+  .muted { color: var(--muted); font-size: 12px; }
+  .result-box { margin-top: 10px; padding: 10px 12px; border-radius: 8px; background: #f9fafb; border: 1px solid var(--border); font-size: 12px; white-space: pre-wrap; font-family: ui-monospace, monospace; max-height: 260px; overflow: auto; }
+  .checkin-photo-preview { max-width: 220px; max-height: 220px; border-radius: 8px; border: 1px solid var(--border); margin-top: 8px; display: block; }
+  small.hint { display: block; color: var(--muted); margin-top: 4px; font-size: 11px; }
+  .toast { position: fixed; bottom: 18px; right: 18px; background: #111827; color: #fff; padding: 10px 16px; border-radius: 8px; font-size: 13px; opacity: 0; transform: translateY(8px); transition: .2s; pointer-events: none; z-index: 50; }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.err { background: #7f1d1d; }
+  .checkbox-list { display: flex; flex-wrap: wrap; gap: 8px; }
+  .checkbox-list label { display: flex; align-items: center; gap: 5px; font-size: 12px; border: 1px solid var(--border); padding: 5px 9px; border-radius: 6px; background: #fafafa; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Hr_SmartPay + Vision — Test UI</h1>
+  <input id="baseUrl" placeholder="API base URL" value="http://localhost:8080/api" style="min-width:220px;">
+  <input id="userName" placeholder="username" style="width:110px;">
+  <input id="password" placeholder="password" type="password" style="width:110px;">
+  <button onclick="doLogin()">Login</button>
+  <span class="spacer"></span>
+  <span id="authStatus">not logged in</span>
+</header>
+
+<nav id="tabsNav"></nav>
+<main id="tabsMain"></main>
+<div class="toast" id="toast"></div>
+
+<script>
+/* ---------------------------------------------------------------------
+   Minimal test UI for Hr_SmartPay + Vision Service integration.
+   Not a production frontend — no routing, no build step, no framework.
+   Auth: paste a username/password once, token is kept in memory only
+   (cleared on page reload) and stamped on every request as a Bearer token.
+   --------------------------------------------------------------------- */
+
+let TOKEN = null;
+
+function baseUrl() {
+  return document.getElementById('baseUrl').value.replace(/\/$/, '');
+}
+
+function setAuthStatus(mode, text) {
+  const el = document.getElementById('authStatus');
+  el.className = mode;
+  el.textContent = text;
+}
+
+function toast(msg, isErr) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show' + (isErr ? ' err' : '');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.remove('show'), 3500);
+}
+
+async function api(path, { method = 'GET', body = null, isForm = false, params = null } = {}) {
+  let url = baseUrl() + path;
+  if (params) {
+    const qs = new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([, v]) => v !== '' && v != null)));
+    const s = qs.toString();
+    if (s) url += '?' + s;
+  }
+  const headers = { 'Accept': 'application/json' };
+  if (TOKEN) headers['Authorization'] = 'Bearer ' + TOKEN;
+  if (body && !isForm) headers['Content-Type'] = 'application/json';
+
+  const res = await fetch(url, {
+    method,
+    headers,
+    body: body ? (isForm ? body : JSON.stringify(body)) : null,
+  });
+
+  let data = null;
+  try { data = await res.json(); } catch (e) { /* no body */ }
+
+  if (!res.ok) {
+    const err = new Error((data && data.message) || res.statusText);
+    err.status = res.status;
+    err.data = data;
+    throw err;
+  }
+  return data;
+}
+
+async function doLogin() {
+  const user_name = document.getElementById('userName').value.trim();
+  const password = document.getElementById('password').value;
+  if (!user_name || !password) { toast('enter username + password', true); return; }
+  try {
+    const data = await api('/login', { method: 'POST', body: { user_name, password } });
+    TOKEN = data.token;
+    setAuthStatus('ok', 'logged in as ' + (data.user?.user_name || user_name));
+    toast('logged in');
+    refreshAll();
+  } catch (e) {
+    setAuthStatus('err', 'login failed');
+    toast('login failed: ' + e.message, true);
+  }
+}
+
+function requireAuth() {
+  if (!TOKEN) { toast('log in first', true); return false; }
+  return true;
+}
+
+/* ---------------------------- Tabs ---------------------------- */
+
+const TABS = ['Zones', 'Employees', 'Cameras', 'Processing & Events', 'Checkin', 'Checkins'];
+let activeTab = 0;
+
+function renderTabsNav() {
+  const nav = document.getElementById('tabsNav');
+  nav.innerHTML = TABS.map((t, i) =>
+    `<button class="${i === activeTab ? 'active' : ''}" onclick="switchTab(${i})">${t}</button>`
+  ).join('');
+}
+
+function switchTab(i) {
+  activeTab = i;
+  renderTabsNav();
+  document.querySelectorAll('.tab').forEach((el, idx) => el.classList.toggle('active', idx === i));
+}
+
+/* ---------------------------- State ---------------------------- */
+let ZONES = [];
+let EMPLOYEES = [];
+let CAMERAS = [];
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+/* ---------------------------- Zones ---------------------------- */
+
+async function loadZones() {
+  try {
+    const data = await api('/zone/get');
+    ZONES = data.Zone || [];
+  } catch (e) { toast('load zones failed: ' + e.message, true); ZONES = []; }
+  renderZones();
+  fillZoneSelects();
+}
+
+function renderZones() {
+  const el = document.getElementById('zonesTable');
+  if (!el) return;
+  if (!ZONES.length) { el.innerHTML = '<p class="muted">no zones yet</p>'; return; }
+  el.innerHTML = `<table><thead><tr><th>ID</th><th>Name</th><th>Type</th><th></th></tr></thead><tbody>
+    ${ZONES.map(z => `<tr>
+      <td>${z.id}</td><td>${esc(z.name)}</td>
+      <td><span class="pill ${z.zone_type === 'work_area' ? 'info' : 'warn'}">${z.zone_type}</span></td>
+      <td><button class="btn danger" onclick="deleteZone(${z.id})">delete</button></td>
+    </tr>`).join('')}
+  </tbody></table>`;
+}
+
+async function addZone() {
+  if (!requireAuth()) return;
+  const name = document.getElementById('zoneName').value.trim();
+  const zone_type = document.getElementById('zoneType').value;
+  if (!name) { toast('zone name required', true); return; }
+  try {
+    await api('/zone/add', { method: 'POST', body: { name, zone_type } });
+    document.getElementById('zoneName').value = '';
+    toast('zone added');
+    loadZones();
+  } catch (e) { toast('add zone failed: ' + e.message, true); }
+}
+
+async function deleteZone(id) {
+  if (!requireAuth()) return;
+  if (!confirm('delete zone #' + id + '?')) return;
+  try {
+    await api('/zone/delete/' + id, { method: 'DELETE' });
+    toast('zone deleted');
+    loadZones();
+  } catch (e) { toast('delete failed: ' + e.message, true); }
+}
+
+/* ---------------------------- Employees ---------------------------- */
+
+async function loadEmployees() {
+  try {
+    const data = await api('/employees/get');
+    EMPLOYEES = data.employees || [];
+  } catch (e) { toast('load employees failed: ' + e.message, true); EMPLOYEES = []; }
+  renderEmployees();
+  fillEmployeeSelects();
+}
+
+function renderEmployees() {
+  const el = document.getElementById('employeesTable');
+  if (!el) return;
+  if (!EMPLOYEES.length) { el.innerHTML = '<p class="muted">no employees yet</p>'; return; }
+  el.innerHTML = `<table><thead><tr>
+      <th>ID</th><th>Name</th><th>Job#</th><th>Position</th><th>Admin.</th><th>Shift</th><th>Photos</th><th></th>
+    </tr></thead><tbody>
+    ${EMPLOYEES.map(e => `<tr>
+      <td>${e.id}</td><td>${esc(e.name)}</td><td>${esc(e.job_num)}</td>
+      <td>${esc(e.position)}</td><td>${esc(e.Administration)}</td>
+      <td>${esc(e.start_time)}–${esc(e.end_time)}</td>
+      <td><button class="btn ghost" onclick="openPhotos(${e.id}, '${esc(e.name).replace(/'/g, "\\'")}')">manage</button></td>
+      <td><button class="btn danger" onclick="deleteEmployee(${e.id})">delete</button></td>
+    </tr>`).join('')}
+  </tbody></table>`;
+}
+
+async function addEmployee() {
+  if (!requireAuth()) return;
+  const fields = ['name', 'Administration', 'department', 'job_num', 'position', 'direct_maneger', 'start_date', 'start_time', 'end_time', 'work_site', 'sheft', 'phone_num'];
+  const body = {};
+  fields.forEach(f => {
+    const v = document.getElementById('emp_' + f)?.value?.trim();
+    if (v) body[f] = v;
+  });
+  if (!body.name || !body.Administration || !body.job_num || !body.position || !body.start_date || !body.start_time || !body.end_time) {
+    toast('fill in name, Administration, job_num, position, start_date, start_time, end_time', true);
+    return;
+  }
+  try {
+    await api('/employees/add', { method: 'POST', body });
+    fields.forEach(f => { const i = document.getElementById('emp_' + f); if (i) i.value = ''; });
+    toast('employee added');
+    loadEmployees();
+  } catch (e) { toast('add employee failed: ' + e.message, true); }
+}
+
+async function deleteEmployee(id) {
+  if (!requireAuth()) return;
+  if (!confirm('delete employee #' + id + '?')) return;
+  try {
+    await api('/employees/delete/' + id, { method: 'DELETE' });
+    toast('employee deleted');
+    loadEmployees();
+  } catch (e) { toast('delete failed: ' + e.message, true); }
+}
+
+function fillEmployeeSelects() {
+  document.querySelectorAll('.employee-select').forEach(sel => {
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">— any —</option>' + EMPLOYEES.map(e => `<option value="${e.id}">${esc(e.name)} (#${e.job_num})</option>`).join('');
+    sel.value = cur;
+  });
+}
+
+/* ------------------------ Employee photos (enrollment) ------------------------ */
+
+let currentPhotoEmployeeId = null;
+
+function openPhotos(id, name) {
+  currentPhotoEmployeeId = id;
+  document.getElementById('photosEmployeeLabel').textContent = `${name} (#${id})`;
+  document.getElementById('photosPanel').style.display = 'block';
+  loadPhotos();
+  document.getElementById('photosPanel').scrollIntoView({ behavior: 'smooth' });
+}
+
+async function loadPhotos() {
+  if (!currentPhotoEmployeeId) return;
+  try {
+    const data = await api(`/employees/${currentPhotoEmployeeId}/photos`);
+    renderPhotos(data.photos || []);
+  } catch (e) { toast('load photos failed: ' + e.message, true); }
+}
+
+function renderPhotos(photos) {
+  const el = document.getElementById('photosList');
+  if (!photos.length) { el.innerHTML = '<p class="muted">no photos enrolled yet</p>'; return; }
+  el.innerHTML = photos.map(p => `
+    <div style="display:inline-block;text-align:center;margin:4px;">
+      <img class="thumb" style="width:64px;height:64px" src="${p.url}" onerror="this.style.opacity=0.3">
+      <div class="muted">${p.type}</div>
+      <button class="btn danger" style="padding:3px 8px;font-size:11px;height:auto" onclick="deletePhoto(${p.id})">×</button>
+    </div>`).join('');
+}
+
+async function uploadPhotos() {
+  if (!requireAuth() || !currentPhotoEmployeeId) return;
+  const faceFiles = document.getElementById('faceImages').files;
+  const bodyFiles = document.getElementById('bodyImages').files;
+  if (!faceFiles.length && !bodyFiles.length) { toast('pick at least one face or body image', true); return; }
+  const fd = new FormData();
+  [...faceFiles].forEach(f => fd.append('face_images[]', f));
+  [...bodyFiles].forEach(f => fd.append('body_images[]', f));
+  try {
+    await api(`/employees/${currentPhotoEmployeeId}/photos`, { method: 'POST', body: fd, isForm: true });
+    document.getElementById('faceImages').value = '';
+    document.getElementById('bodyImages').value = '';
+    toast('uploaded — enrollment queued in the background (give it a few seconds)');
+    loadPhotos();
+  } catch (e) { toast('upload failed: ' + e.message, true); }
+}
+
+async function deletePhoto(photoId) {
+  if (!requireAuth() || !currentPhotoEmployeeId) return;
+  try {
+    await api(`/employees/${currentPhotoEmployeeId}/photos/${photoId}`, { method: 'DELETE' });
+    toast('photo deleted, re-enrollment queued');
+    loadPhotos();
+  } catch (e) { toast('delete failed: ' + e.message, true); }
+}
+
+/* ---------------------------- Cameras ---------------------------- */
+
+async function loadCameras() {
+  try {
+    const data = await api('/camera/get');
+    CAMERAS = data.cameras || [];
+  } catch (e) { toast('load cameras failed: ' + e.message, true); CAMERAS = []; }
+  renderCameras();
+  fillCameraCheckboxes();
+  fillCameraSelects();
+}
+
+function renderCameras() {
+  const el = document.getElementById('camerasTable');
+  if (!el) return;
+  if (!CAMERAS.length) { el.innerHTML = '<p class="muted">no cameras yet</p>'; return; }
+  el.innerHTML = `<table><thead><tr><th>ID</th><th>Name</th><th>Zone</th><th>Video</th><th></th></tr></thead><tbody>
+    ${CAMERAS.map(c => `<tr>
+      <td>${c.id}</td><td>${esc(c.name)}</td><td>${esc(c.zone?.name)}</td>
+      <td>${c.video_url ? `<a href="${c.video_url}" target="_blank">view</a>` : '<span class="muted">none</span>'}</td>
+      <td>
+        <button class="btn" onclick="processCamera(${c.id})">process</button>
+        <button class="btn danger" onclick="deleteCamera(${c.id})">delete</button>
+      </td>
+    </tr>`).join('')}
+  </tbody></table>`;
+}
+
+function fillZoneSelects() {
+  document.querySelectorAll('.zone-select').forEach(sel => {
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">select zone…</option>' + ZONES.map(z => `<option value="${z.id}">${esc(z.name)} (${z.zone_type})</option>`).join('');
+    sel.value = cur;
+  });
+}
+
+async function addCamera() {
+  if (!requireAuth()) return;
+  const name = document.getElementById('camName').value.trim();
+  const zone_id = document.getElementById('camZone').value;
+  const video = document.getElementById('camVideo').files[0];
+  if (!name || !zone_id || !video) { toast('name, zone and video file are all required', true); return; }
+  const fd = new FormData();
+  fd.append('name', name);
+  fd.append('zone_id', zone_id);
+  fd.append('video', video);
+  try {
+    await api('/camera/add', { method: 'POST', body: fd, isForm: true });
+    document.getElementById('camName').value = '';
+    document.getElementById('camVideo').value = '';
+    toast('camera added');
+    loadCameras();
+  } catch (e) { toast('add camera failed: ' + e.message, true); }
+}
+
+async function deleteCamera(id) {
+  if (!requireAuth()) return;
+  if (!confirm('delete camera #' + id + '?')) return;
+  try {
+    await api('/camera/delete/' + id, { method: 'DELETE' });
+    toast('camera deleted');
+    loadCameras();
+  } catch (e) { toast('delete failed: ' + e.message, true); }
+}
+
+/* ---------------------- Processing & Events ---------------------- */
+
+function fillCameraCheckboxes() {
+  const el = document.getElementById('batchCameraList');
+  if (!el) return;
+  el.innerHTML = CAMERAS.map(c => `<label><input type="checkbox" value="${c.id}"> ${esc(c.name)}</label>`).join('') || '<span class="muted">no cameras</span>';
+}
+
+function fillCameraSelects() {
+  document.querySelectorAll('.camera-select').forEach(sel => {
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">select camera…</option>' + CAMERAS.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
+    sel.value = cur;
+  });
+}
+
+async function processCamera(id) {
+  if (!requireAuth()) return;
+  showProcessingResult('processing camera #' + id + ' …');
+  try {
+    const data = await api(`/camera/${id}/process`, { method: 'POST' });
+    showProcessingResult(JSON.stringify(data, null, 2));
+    toast('processing submitted');
+  } catch (e) {
+    showProcessingResult('ERROR: ' + e.message + (e.data ? '\n' + JSON.stringify(e.data, null, 2) : ''));
+  }
+}
+
+async function processSelectedCamera() {
+  const id = document.getElementById('processCameraSelect').value;
+  if (!id) { toast('pick a camera', true); return; }
+  processCamera(id);
+}
+
+async function processBatch() {
+  if (!requireAuth()) return;
+  const ids = [...document.querySelectorAll('#batchCameraList input:checked')].map(i => Number(i.value));
+  if (!ids.length) { toast('select at least one camera', true); return; }
+  showProcessingResult('submitting batch job for cameras: ' + ids.join(', ') + ' …');
+  try {
+    const data = await api('/cameras/process-batch', { method: 'POST', body: { camera_ids: ids } });
+    showProcessingResult(JSON.stringify(data, null, 2));
+    toast('batch processing submitted');
+  } catch (e) {
+    showProcessingResult('ERROR: ' + e.message + (e.data ? '\n' + JSON.stringify(e.data, null, 2) : ''));
+  }
+}
+
+function showProcessingResult(text) {
+  document.getElementById('processingResult').textContent = text;
+}
+
+async function loadEvents() {
+  if (!requireAuth()) return;
+  const cameraId = document.getElementById('eventsCameraSelect').value;
+  if (!cameraId) { toast('pick a camera to view events for', true); return; }
+  const params = {
+    employee_id: document.getElementById('eventsEmployeeFilter').value,
+    event_type: document.getElementById('eventsTypeFilter').value,
+    date: document.getElementById('eventsDateFilter').value,
+  };
+  try {
+    const data = await api(`/camera/${cameraId}/events`, { params });
+    renderEvents(data.events || data.data || []);
+  } catch (e) { toast('load events failed: ' + e.message, true); }
+}
+
+function renderEvents(events) {
+  const el = document.getElementById('eventsTable');
+  if (!events.length) { el.innerHTML = '<p class="muted">no events (yet — processing may still be running in the background)</p>'; return; }
+  el.innerHTML = `<table><thead><tr><th>Type</th><th>Employee</th><th>Zone</th><th>Start–End (s)</th><th>Duration (s)</th></tr></thead><tbody>
+    ${events.map(ev => `<tr>
+      <td><span class="pill info">${esc(ev.event_type)}</span></td>
+      <td>${ev.employee_name ? esc(ev.employee_name) + ' (#' + esc(ev.job_num) + ')' : '<span class="muted">unknown</span>'}</td>
+      <td>${esc(ev.zone)} <span class="muted">(${esc(ev.zone_type)})</span></td>
+      <td>${esc(ev.start_s)} – ${esc(ev.end_s)}</td>
+      <td>${esc(ev.duration_s)}</td>
+    </tr>`).join('')}
+  </tbody></table>`;
+}
+
+/* ---------------------------- Checkin ---------------------------- */
+
+document.addEventListener('DOMContentLoaded', () => {
+  const input = document.getElementById('checkinPhoto');
+  if (input) {
+    input.addEventListener('change', () => {
+      const preview = document.getElementById('checkinPreview');
+      if (input.files[0]) {
+        preview.src = URL.createObjectURL(input.files[0]);
+        preview.style.display = 'block';
+      } else {
+        preview.style.display = 'none';
+      }
+    });
+  }
+});
+
+async function submitCheckin() {
+  if (!requireAuth()) return;
+  const file = document.getElementById('checkinPhoto').files[0];
+  if (!file) { toast('pick a photo', true); return; }
+  const fd = new FormData();
+  fd.append('photo', file);
+  const resultEl = document.getElementById('checkinResult');
+  resultEl.textContent = 'submitting…';
+  try {
+    const data = await api('/checkin', { method: 'POST', body: fd, isForm: true });
+    resultEl.innerHTML = `<span class="pill ok">201 matched</span>\n` + JSON.stringify(data, null, 2);
+    toast('checkin recorded');
+    loadCheckins();
+  } catch (e) {
+    const pill = e.status === 409 ? '<span class="pill warn">409 already checked in today</span>'
+      : e.status === 422 ? '<span class="pill err">422 not recognized</span>'
+      : `<span class="pill err">${e.status || 'error'}</span>`;
+    resultEl.innerHTML = pill + '\n' + (e.message || '') + (e.data ? '\n' + JSON.stringify(e.data, null, 2) : '');
+  }
+}
+
+/* ---------------------------- Checkins list ---------------------------- */
+
+async function loadCheckins() {
+  if (!requireAuth()) return;
+  const params = {
+    employee_id: document.getElementById('checkinsEmployeeFilter').value,
+    date: document.getElementById('checkinsDateFilter').value,
+  };
+  try {
+    const data = await api('/checkins', { params });
+    renderCheckins(data.checkins || data.data || []);
+  } catch (e) { toast('load checkins failed: ' + e.message, true); }
+}
+
+function renderCheckins(list) {
+  const el = document.getElementById('checkinsTable');
+  if (!list.length) { el.innerHTML = '<p class="muted">no checkins recorded</p>'; return; }
+  el.innerHTML = `<table><thead><tr><th>Employee</th><th>Date</th><th>Checked in at</th><th>Confidence</th><th>Method</th></tr></thead><tbody>
+    ${list.map(c => `<tr>
+      <td>${c.employee_name ? esc(c.employee_name) + ' (#' + esc(c.job_num) + ')' : '<span class="muted">—</span>'}</td>
+      <td>${esc(c.date)}</td>
+      <td>${esc(c.checked_in_at)}</td>
+      <td>${c.confidence != null ? esc(c.confidence) : '<span class="muted">—</span>'}</td>
+      <td>${c.method ? `<span class="pill info">${esc(c.method)}</span>` : '<span class="muted">—</span>'}</td>
+    </tr>`).join('')}
+  </tbody></table>`;
+}
+
+/* ---------------------------- Boot ---------------------------- */
+
+function refreshAll() {
+  loadZones();
+  loadEmployees();
+  loadCameras();
+}
+
+function buildLayout() {
+  renderTabsNav();
+  const main = document.getElementById('tabsMain');
+  main.innerHTML = `
+
+  <div class="tab active" data-tab="0">
+    <div class="card">
+      <h2>Add zone</h2>
+      <div class="row">
+        <div class="field"><label>Name</label><input id="zoneName" placeholder="e.g. Main Warehouse"></div>
+        <div class="field"><label>Type</label>
+          <select id="zoneType"><option value="work_area">work_area</option><option value="common_area">common_area</option></select>
+        </div>
+        <button class="btn" onclick="addZone()">add zone</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Zones <button class="btn ghost" style="float:right" onclick="loadZones()">refresh</button></h2>
+      <div id="zonesTable"></div>
+    </div>
+  </div>
+
+  <div class="tab" data-tab="1">
+    <div class="card">
+      <h2>Add employee</h2>
+      <div class="row">
+        <div class="field"><label>Name *</label><input id="emp_name"></div>
+        <div class="field"><label>Administration *</label><input id="emp_Administration"></div>
+        <div class="field"><label>Department</label><input id="emp_department"></div>
+        <div class="field"><label>Job # *</label><input id="emp_job_num" type="number"></div>
+        <div class="field"><label>Position *</label><input id="emp_position"></div>
+        <div class="field"><label>Direct manager</label><input id="emp_direct_maneger"></div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <div class="field"><label>Start date *</label><input id="emp_start_date" type="date"></div>
+        <div class="field"><label>Start time *</label><input id="emp_start_time" type="time"></div>
+        <div class="field"><label>End time *</label><input id="emp_end_time" type="time"></div>
+        <div class="field"><label>Work site</label><input id="emp_work_site"></div>
+        <div class="field"><label>Shift</label><input id="emp_sheft"></div>
+        <div class="field"><label>Phone</label><input id="emp_phone_num"></div>
+        <button class="btn" onclick="addEmployee()">add employee</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Employees <button class="btn ghost" style="float:right" onclick="loadEmployees()">refresh</button></h2>
+      <div id="employeesTable"></div>
+    </div>
+    <div class="card" id="photosPanel" style="display:none">
+      <h2>Photos — <span id="photosEmployeeLabel"></span></h2>
+      <div id="photosList" style="margin-bottom:10px"></div>
+      <div class="row">
+        <div class="field"><label>Face image(s)</label><input id="faceImages" type="file" accept="image/*" multiple></div>
+        <div class="field"><label>Body image(s)</label><input id="bodyImages" type="file" accept="image/*" multiple></div>
+        <button class="btn" onclick="uploadPhotos()">upload &amp; enroll</button>
+      </div>
+      <small class="hint">Upload triggers enrollment into the vision service in the background (queued job) — give it a few seconds, then re-check via checkin.</small>
+    </div>
+  </div>
+
+  <div class="tab" data-tab="2">
+    <div class="card">
+      <h2>Add camera</h2>
+      <div class="row">
+        <div class="field"><label>Name *</label><input id="camName"></div>
+        <div class="field"><label>Zone *</label><select id="camZone" class="zone-select"></select></div>
+        <div class="field"><label>Video file *</label><input id="camVideo" type="file" accept="video/mp4,video/quicktime,.mp4,.mov,.avi,.mkv"></div>
+        <button class="btn" onclick="addCamera()">add camera</button>
+      </div>
+      <small class="hint">Backend accepts mp4/mov/avi/mkv, up to 500MB.</small>
+    </div>
+    <div class="card">
+      <h2>Cameras <button class="btn ghost" style="float:right" onclick="loadCameras()">refresh</button></h2>
+      <div id="camerasTable"></div>
+    </div>
+  </div>
+
+  <div class="tab" data-tab="3">
+    <div class="card">
+      <h2>Process a single camera</h2>
+      <div class="row">
+        <div class="field"><label>Camera</label><select id="processCameraSelect" class="camera-select"></select></div>
+        <button class="btn" onclick="processSelectedCamera()">process</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Batch process</h2>
+      <div class="checkbox-list" id="batchCameraList"></div>
+      <div style="margin-top:10px"><button class="btn" onclick="processBatch()">process selected</button></div>
+    </div>
+    <div class="card">
+      <h2>Job submission result</h2>
+      <div class="result-box" id="processingResult">no request made yet</div>
+    </div>
+    <div class="card">
+      <h2>Activity events</h2>
+      <div class="row">
+        <div class="field"><label>Camera</label><select id="eventsCameraSelect" class="camera-select"></select></div>
+        <div class="field"><label>Employee</label><select id="eventsEmployeeFilter" class="employee-select"><option value="">— any —</option></select></div>
+        <div class="field"><label>Event type</label>
+          <select id="eventsTypeFilter">
+            <option value="">— any —</option>
+            <option value="presence">presence</option>
+            <option value="working">working</option>
+            <option value="phone_use">phone_use</option>
+            <option value="interaction">interaction</option>
+          </select>
+        </div>
+        <div class="field"><label>Date</label><input id="eventsDateFilter" type="date"></div>
+        <button class="btn" onclick="loadEvents()">load events</button>
+      </div>
+      <div id="eventsTable" style="margin-top:10px"></div>
+    </div>
+  </div>
+
+  <div class="tab" data-tab="4">
+    <div class="card">
+      <h2>Simulate checkin (kiosk photo)</h2>
+      <div class="row">
+        <div class="field"><label>Photo *</label><input id="checkinPhoto" type="file" accept="image/*"></div>
+        <button class="btn" onclick="submitCheckin()">submit checkin</button>
+      </div>
+      <img id="checkinPreview" class="checkin-photo-preview" style="display:none">
+      <h2 style="margin-top:16px">Result</h2>
+      <div class="result-box" id="checkinResult">no attempt yet</div>
+    </div>
+  </div>
+
+  <div class="tab" data-tab="5">
+    <div class="card">
+      <h2>Checkins <button class="btn ghost" style="float:right" onclick="loadCheckins()">refresh</button></h2>
+      <div class="row">
+        <div class="field"><label>Employee</label><select id="checkinsEmployeeFilter" class="employee-select"><option value="">— any —</option></select></div>
+        <div class="field"><label>Date</label><input id="checkinsDateFilter" type="date"></div>
+        <button class="btn" onclick="loadCheckins()">filter</button>
+      </div>
+      <div id="checkinsTable" style="margin-top:10px"></div>
+    </div>
+  </div>
+  `;
+}
+
+buildLayout();
+</script>
+</body>
+</html>

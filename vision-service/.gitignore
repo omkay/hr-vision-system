@@ -1,0 +1,28 @@
+# ── Python ──
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# ── macOS ──
+.DS_Store
+
+# ── generated / large outputs ──
+outputs/
+runs/
+__marimo__/
+
+# ── model weights (download separately) ──
+*.pt
+*.onnx
+*.pth
+
+# ── data (keep locally, don't commit raw video) ──
+data/
+
+# ── insightface model cache ──
+models/buffalo_l/
+
+# ── enrolled-identity gallery (generated locally by /enroll, not source) ──
+gallery/

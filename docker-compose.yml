@@ -1,0 +1,97 @@
+name: hr-vision-system
+
+services:
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: hr_smartpay
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  hr-app:
+    build:
+      context: ./backend-service
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    environment: &hr-env
+      APP_ENV: local
+      APP_DEBUG: "true"
+      APP_URL: http://localhost:8080
+      DB_CONNECTION: mysql
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_DATABASE: hr_smartpay
+      DB_USERNAME: root
+      DB_PASSWORD: root
+      # database sessions/cache need migrations this repo doesn't ship centrally yet — use file
+      # storage for the container so the stack boots; revisit once those migrations exist.
+      SESSION_DRIVER: file
+      CACHE_STORE: file
+      QUEUE_CONNECTION: database
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      VISION_SERVICE_URL: http://vision-service:8000
+      # APP_URL (above) is browser-facing and unreachable from inside other containers.
+      # Any code building a URL to hand to vision-service (camera video, employee photo)
+      # must use this instead of asset()/Storage::url() — see ADR-001 in backend-service/.
+      INTERNAL_APP_URL: http://hr-app:8080
+      # Without this, php -S is single-threaded: a synchronous request that calls OUT to
+      # vision-service (e.g. POST /checkin), which then calls BACK into hr-app to fetch
+      # the photo, deadlocks against itself until the outbound call times out. Enrollment
+      # never hit this because it runs in hr-queue (a separate process), but /checkin does.
+      PHP_CLI_SERVER_WORKERS: "4"
+    ports:
+      - "8080:8080"
+
+  hr-queue:
+    build:
+      context: ./backend-service
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      hr-app:
+        condition: service_started
+    environment:
+      <<: *hr-env
+      SKIP_MIGRATIONS: "true"
+    entrypoint: ["entrypoint.sh"]
+    command: ["php", "artisan", "queue:work", "--tries=3", "--sleep=2"]
+
+  vision-service:
+    build:
+      context: ./vision-service
+    restart: unless-stopped
+    environment:
+      PROJECT_DIR: /app
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./vision-service/data:/app/data
+      - ./vision-service/gallery:/app/gallery
+      - ./vision-service/outputs:/app/outputs
+      - ./vision-service/models:/app/models
+      - vision-model-cache:/root/.insightface
+
+volumes:
+  mysql-data:
+  vision-model-cache:

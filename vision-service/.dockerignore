@@ -1,0 +1,14 @@
+venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+.git/
+.DS_Store
+data/*.mp4
+data/upload_*
+outputs/
+runs/
+gallery/gallery.npz
+gallery/_harvest/
+models/
+*.ipynb_checkpoints

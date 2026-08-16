@@ -1,0 +1,47 @@
+# Employee Activity Tracking — pinned dependencies
+# Python 3.11 required.  Do NOT pip install -r this directly.
+# Use setup.py instead — it handles install order and build flags.
+
+# ── PyTorch (setup.py picks the right index URL per platform) ──
+torch==2.11.0
+torchvision==0.26.0
+
+# ── core numerics / data ──
+numpy>=2.0
+pandas==2.2.2
+matplotlib==3.9.0
+seaborn==0.13.2
+scikit-learn==1.5.0
+shapely==2.0.4
+tqdm==4.66.4
+pyyaml==6.0.1
+networkx>=3.2
+
+# ── computer vision ──
+opencv-python>=4.10
+ultralytics>=8.3.40,<8.4
+insightface==0.7.3
+onnxruntime==1.25.1
+lapx==0.5.11
+
+# ── re-id (legacy build; setup.py uses --no-build-isolation) ──
+filterpy==1.4.5
+torchreid==0.2.5
+
+# ── torchreid runtime deps (not declared in its own setup.py) ──
+gdown
+yacs
+h5py
+tensorboard
+future
+imageio
+Cython
+
+# ── notebook ──
+marimo==0.23.4
+
+# ── service (FastAPI app) ──
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.7
+python-multipart>=0.0.9
