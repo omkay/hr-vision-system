@@ -19,7 +19,8 @@ __marimo__/
 *.pth
 
 # ── data (keep locally, don't commit raw video) ──
-data/
+data/*
+!data/README.md
 
 # ── insightface model cache ──
 models/buffalo_l/

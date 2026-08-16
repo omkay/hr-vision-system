@@ -30,6 +30,11 @@ Once it's up, open `frontend/test-ui.html` directly in a browser (or
 `http://localhost:8080/test-ui.html`) to exercise the system end to end. Default API base
 URL is `http://localhost:8080/api`.
 
+## Test media
+
+Raw test videos/photos are shared via a team Drive/Dropbox folder, not git (large
+binaries). See `vision-service/data/README.md` for the link and download instructions.
+
 ## Documentation
 
 - `backend-service/openapi.yaml` — full API spec for the Laravel backend.

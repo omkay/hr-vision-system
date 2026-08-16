@@ -27,6 +27,7 @@ vision-service/__marimo__/
 vision-service/*.pt
 vision-service/*.onnx
 vision-service/*.pth
-vision-service/data/
+vision-service/data/*
+!vision-service/data/README.md
 vision-service/models/buffalo_l/
 vision-service/gallery/
