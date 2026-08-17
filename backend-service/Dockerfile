@@ -21,10 +21,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # CameraController already validates videos up to 500MB — PHP's own defaults
 # (2M/8M) silently rejected anything over that before this existed.
+# max_execution_time raised 300 -> 900: /checkin now runs vision-service's
+# /checkin/video-multi synchronously, which has no early exit (has to scan
+# the whole clip to find every person) and runs full YOLO detection +
+# tracking + face-matching per frame on CPU-only inference — a multi-minute
+# 4K clip can genuinely take several minutes, and was hitting this ceiling.
 RUN { \
       echo 'upload_max_filesize = 512M'; \
       echo 'post_max_size = 512M'; \
-      echo 'max_execution_time = 300'; \
+      echo 'max_execution_time = 900'; \
     } > /usr/local/etc/php/conf.d/uploads.ini
 
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
@@ -40,7 +45,7 @@ COPY --from=assets /app/public/build ./public/build
 
 RUN composer dump-autoload --optimize \
     && cp -n .env.example .env \
-    && mkdir -p storage/framework/cache storage/framework/sessions storage/framework/testing storage/framework/views storage/logs bootstrap/cache \
+    && mkdir -p storage/framework/cache storage/framework/sessions storage/framework/testing storage/framework/views storage/logs storage/api-docs bootstrap/cache \
     && chmod -R 775 storage bootstrap/cache
 
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh

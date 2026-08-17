@@ -5,9 +5,27 @@ namespace App\Http\Controllers;
 use App\Models\Employee;
 use App\Models\Zone;
 use Illuminate\Http\Request;
+use OpenApi\Attributes as OA;
 
 class ZoneController extends Controller
 {
+    #[OA\Post(
+        path: '/zone/add',
+        summary: 'Add a zone',
+        tags: ['Zones'],
+        security: [['bearerAuth' => []]],
+        requestBody: new OA\RequestBody(
+            required: true,
+            content: new OA\JsonContent(
+                required: ['name'],
+                properties: [
+                    new OA\Property(property: 'name', type: 'string', example: 'Main Lobby'),
+                    new OA\Property(property: 'zone_type', type: 'string', enum: ['work_area', 'common_area'], example: 'common_area'),
+                ],
+            ),
+        ),
+        responses: [new OA\Response(response: 200, description: 'Zone created.')],
+    )]
     public function store(Request $request)
     {
         $request->validate([
@@ -66,6 +84,13 @@ class ZoneController extends Controller
         ], 200);
     }
 
+    #[OA\Get(
+        path: '/zone/get',
+        summary: 'List zones',
+        tags: ['Zones'],
+        security: [['bearerAuth' => []]],
+        responses: [new OA\Response(response: 200, description: 'All zones.')],
+    )]
     public function get_zones (){
         $Zone = Zone::latest()->get();
 

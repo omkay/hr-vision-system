@@ -8,6 +8,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
+use OpenApi\Attributes as OA;
 
 class EmployeeController extends Controller
 {
@@ -28,6 +29,38 @@ class EmployeeController extends Controller
         }
     }
 
+    #[OA\Post(
+        path: '/employees/add',
+        summary: 'Add an employee',
+        tags: ['Employees'],
+        security: [['bearerAuth' => []]],
+        requestBody: new OA\RequestBody(
+            required: true,
+            content: new OA\MediaType(
+                mediaType: 'multipart/form-data',
+                schema: new OA\Schema(
+                    required: ['name', 'Administration', 'job_num', 'position', 'start_date', 'start_time', 'end_time'],
+                    properties: [
+                        new OA\Property(property: 'name', type: 'string'),
+                        new OA\Property(property: 'Administration', type: 'string'),
+                        new OA\Property(property: 'department', type: 'string'),
+                        new OA\Property(property: 'job_num', type: 'integer'),
+                        new OA\Property(property: 'position', type: 'string'),
+                        new OA\Property(property: 'direct_maneger', type: 'string'),
+                        new OA\Property(property: 'start_date', type: 'string', format: 'date'),
+                        new OA\Property(property: 'start_time', type: 'string'),
+                        new OA\Property(property: 'end_time', type: 'string'),
+                        new OA\Property(property: 'work_site', type: 'string'),
+                        new OA\Property(property: 'sheft', type: 'string'),
+                        new OA\Property(property: 'phone_num', type: 'string'),
+                        new OA\Property(property: 'card_id', type: 'string'),
+                        new OA\Property(property: 'image', type: 'string', format: 'binary', description: 'Optional — triggers async vision-service enrollment if provided.'),
+                    ],
+                ),
+            ),
+        ),
+        responses: [new OA\Response(response: 201, description: 'Employee created.')],
+    )]
     public function store(Request $request)
     {
         $request->validate([
@@ -200,6 +233,13 @@ class EmployeeController extends Controller
         ], 200);
     }
 
+    #[OA\Get(
+        path: '/employees/get',
+        summary: 'List employees',
+        tags: ['Employees'],
+        security: [['bearerAuth' => []]],
+        responses: [new OA\Response(response: 200, description: 'All employees.')],
+    )]
     public function get_employees (){
 
         $employees = Employee::latest()->get();

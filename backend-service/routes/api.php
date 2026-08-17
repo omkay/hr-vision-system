@@ -27,6 +27,8 @@ Route::middleware(['filter_input', 'auth:sanctum', 'check.idel', 'authorization:
     Route::post('/camera/{id}/process', [CameraProcessingController::class, 'process']);
     Route::post('/cameras/process-batch', [CameraProcessingController::class, 'processBatch']);
     Route::get('/camera/{id}/events', [CameraProcessingController::class, 'events']);
+    Route::get('/events', [CameraProcessingController::class, 'allEvents']);
+    Route::get('/vision-jobs/{id}', [CameraProcessingController::class, 'jobStatus']);
 
     Route::post('/employees/add', [EmployeeController::class, 'store']);
     Route::get('/employees/get', [EmployeeController::class, 'get_employees']);

@@ -43,4 +43,17 @@ DEFAULT_STRIDE   = 2
 DEFAULT_MAX_FRAMES = 600
 DEFAULT_PROX_PX  = 180
 
+# Cap detection resolution — our NVR footage runs up to 3840x2160, but YOLO's
+# own preprocessing resizes to a much smaller imgsz internally regardless, so
+# feeding it (and face/reid cropping) full 4K buys zero accuracy and directly
+# caused a real 502 timeout on /checkin/video-multi (CPU-only inference on a
+# multi-minute 4K clip, no early exit). Frames wider/taller than this on their
+# longest side are downscaled once per frame before detection; zones and
+# emitted bboxes stay self-consistent since everything downstream of the
+# resize (zone matching, cropping, annotated-video output) operates in this
+# same scaled coordinate space. Does NOT apply to checkin_video()'s
+# motion/blur gates — those thresholds were GA-tuned against native-resolution
+# footage (see GA optimisation/) and downscaling would need a separate re-tune.
+DETECTION_MAX_DIM = 1280
+
 YOLO_WEIGHTS = str(PROJECT_DIR / "yolov8m.pt")

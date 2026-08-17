@@ -6,10 +6,13 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from ..config import DEFAULT_FACE_THR, DEFAULT_REID_THR, GALLERY_PATH
+from ..config import (
+    DEFAULT_DET_CONF, DEFAULT_DET_IOU, DEFAULT_FACE_THR, DEFAULT_MAX_FRAMES,
+    DEFAULT_REID_THR, DEFAULT_STRIDE, GALLERY_PATH,
+)
 from ..gallery import EmployeeGallery
-from ..pipeline import checkin, checkin_video
-from ..schemas import CheckinResponse, CheckinVideoResponse
+from ..pipeline import checkin, checkin_video, checkin_video_multi
+from ..schemas import CheckinResponse, CheckinVideoMultiResponse, CheckinVideoResponse
 from ..storage import is_remote, _is_stream
 
 router = APIRouter(prefix="/checkin", tags=["checkin"])
@@ -193,6 +196,91 @@ def checkin_video_endpoint(req: CheckinVideoRequest):
             blur_thr=req.blur_thr,
             early_exit_conf=req.early_exit_conf,
             max_frames=req.max_frames,
+        )
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
+
+
+class CheckinVideoMultiRequest(BaseModel):
+    """Identify every distinct person in a video file or live camera stream."""
+
+    source: str = Field(
+        ...,
+        description=(
+            "Video source — any of: local file path, `https://` URL, `s3://` URI, "
+            "`rtsp://` stream URL, or webcam index string (e.g. `\"0\"`)."
+        ),
+        examples=["/data/lobby_camera.mp4"],
+    )
+    face_thr: float = Field(DEFAULT_FACE_THR, description="Min cosine similarity for a face match (0-1).")
+    reid_thr: float = Field(DEFAULT_REID_THR, description="Min cosine similarity for a ReID (body) match (0-1).")
+    stride: int = Field(
+        DEFAULT_STRIDE,
+        description=(
+            "Process every Nth frame. Uses the zone/events pipeline's default "
+            "(2), not checkin/video's — ByteTrack needs closer-together frames "
+            "to keep a person's track_id stable, unlike single-match checkin."
+        ),
+    )
+    max_frames: int = Field(
+        DEFAULT_MAX_FRAMES,
+        description="Hard cap on frames to inspect. No early exit here, so this is the real processing budget.",
+    )
+    det_conf: float = Field(DEFAULT_DET_CONF, description="YOLOv8 person-detection confidence threshold.")
+    det_iou: float = Field(DEFAULT_DET_IOU, description="YOLOv8 NMS IoU threshold.")
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {"source": "/data/lobby_camera.mp4"},
+        }
+    }
+
+
+@router.post(
+    "/video-multi",
+    response_model=CheckinVideoMultiResponse,
+    summary="Identify every distinct person from a video or stream",
+    response_description="One match per distinct person identified, not just the most prominent one.",
+)
+def checkin_video_multi_endpoint(req: CheckinVideoMultiRequest):
+    """Identify every distinct person appearing in a video — not just one.
+
+    Use this instead of `/checkin/video` whenever a clip might show more than
+    one person you need to identify (e.g. several employees passing the same
+    entrance camera at different times). `/checkin/video` is built for a
+    kiosk "one person walks up" scenario and its early exit stops scanning
+    the instant the *first* confident match is found — correct for that use
+    case, wrong here, since anyone appearing later in the clip would never
+    even be looked at.
+
+    **How it differs from `/checkin/video`:**
+
+    | | `/checkin/video` | `/checkin/video-multi` |
+    |---|---|---|
+    | Goal | fastest single answer | complete list of everyone identified |
+    | Tracking | none (independent frame votes) | ByteTrack, same as `/events/run` |
+    | Early exit | yes, on first confident match | no — scans the full video/`max_frames` |
+    | Result | one `employee_id` | list of `{employee_id, confidence}` |
+
+    Each detected person is tracked across frames (ByteTrack) and resolved to
+    an identity via the same rolling-vote `IdentityFuser` the zone/events
+    pipeline uses — a track only appears in the result once it has
+    accumulated enough consistent evidence to "commit" to an identity, so a
+    single stray misdetection can't show up as "this person was here".
+    """
+    gallery = _load_gallery()
+    if not is_remote(req.source) and not _is_stream(req.source):
+        if not Path(req.source).exists():
+            raise HTTPException(400, f"Video source not found: {req.source}")
+    try:
+        return checkin_video_multi(
+            req.source, gallery,
+            face_thr=req.face_thr,
+            reid_thr=req.reid_thr,
+            stride=req.stride,
+            max_frames=req.max_frames,
+            det_conf=req.det_conf,
+            det_iou=req.det_iou,
         )
     except RuntimeError as e:
         raise HTTPException(400, str(e))

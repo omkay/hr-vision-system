@@ -61,6 +61,17 @@ services:
       PHP_CLI_SERVER_WORKERS: "4"
     ports:
       - "8080:8080"
+    volumes:
+      # Uploaded camera videos / employee photos / checkin photos live under
+      # storage/app/public, which is otherwise part of the container's
+      # writable layer — every `--build` (which we've done repeatedly this
+      # session, for router.php/pipeline.py/l5-swagger changes) discards that
+      # layer and silently wipes every uploaded file, even though the DB rows
+      # referencing them survive in the separate mysql volume. That's exactly
+      # why "process camera" started 403'ing: the camera row still exists,
+      # but its video file on disk doesn't anymore. Named volume so uploads
+      # survive rebuilds from here on.
+      - hr-storage:/var/www/html/storage/app/public
 
   hr-queue:
     build:
@@ -95,3 +106,4 @@ services:
 volumes:
   mysql-data:
   vision-model-cache:
+  hr-storage:

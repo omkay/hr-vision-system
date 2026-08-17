@@ -7,33 +7,75 @@ use App\Models\EmployeeCheckin;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use OpenApi\Attributes as OA;
 
 /**
- * Daily attendance checkin — "was this employee present today" — distinct
- * from the (separate, not-yet-built) zone-based activity tracking feature.
+ * Daily attendance checkin — "who was present today" — distinct from the
+ * (separate) zone-based activity tracking feature.
  * See INTEGRATION-TODO-multi-photo-enrollment.md section 2 for the design.
  *
- * Identity is discovered FROM the photo, not supplied by the caller —
+ * Identity is discovered FROM the footage, not supplied by the caller —
  * employees have no login accounts of their own in this app, so a kiosk or
- * personal device has no other way to know who's checking in. A checkin is
- * a deliberate, synchronous action: one photo, matched immediately, accepted
- * or rejected in the same request — no queue, no polling, unlike enrollment.
+ * entrance camera has no other way to know who's checking in.
+ *
+ * Takes a VIDEO clip (not a single photo) and identifies EVERY distinct
+ * employee that appears in it via the vision service's /checkin/video-multi
+ * — a real entrance/lobby camera clip commonly has more than one person
+ * walk through in the same window (this is exactly the scenario the
+ * checkin-video demo surfaced: both Hasan and Majd in one clip), and a
+ * single-photo/single-answer endpoint could only ever check one of them in.
+ * One request can therefore produce zero, one, or several checkin records —
+ * see `checkins` in the response, one entry per identified person.
  */
 class CheckinController extends Controller
 {
+    #[OA\Post(
+        path: '/checkin',
+        summary: 'Kiosk/entrance video checkin — identifies every distinct employee in the clip',
+        description: 'Identity is determined from the footage, not supplied by the caller. '
+            . 'A single video clip may contain more than one employee (e.g. several people passing '
+            . 'an entrance camera together) — every distinct person recognized gets their own entry '
+            . 'in the `checkins` array of the response, each with its own status.',
+        tags: ['Checkin'],
+        security: [['bearerAuth' => []]],
+        requestBody: new OA\RequestBody(
+            required: true,
+            content: new OA\MediaType(
+                mediaType: 'multipart/form-data',
+                schema: new OA\Schema(required: ['video'], properties: [
+                    new OA\Property(property: 'video', type: 'string', format: 'binary', description: 'mp4/mov/avi/mkv, up to 500MB.'),
+                ]),
+            ),
+        ),
+        responses: [
+            new OA\Response(
+                response: 201,
+                description: 'Video processed — see `checkins` for a per-employee status '
+                    . '(`checked_in`, `already_checked_in`, or `unrecognized_employee`).',
+            ),
+            new OA\Response(response: 422, description: 'No employee recognized anywhere in the clip.'),
+            new OA\Response(response: 502, description: 'Could not reach the vision service.'),
+        ],
+    )]
     public function store(Request $request)
     {
         $request->validate([
-            'photo' => 'required|image|mimes:jpg,jpeg,png,webp|max:2048',
+            'video' => 'required|file|mimes:mp4,mov,avi,mkv|max:512000',
         ]);
 
-        $photoPath = $request->file('photo')->store('checkins', 'public');
-        $photoUrl = rtrim(config('app.internal_url'), '/') . '/storage/' . $photoPath;
-        $visionUrl = rtrim(config('services.vision.url'), '/') . '/checkin';
+        $videoPath = $request->file('video')->store('checkins', 'public');
+        $videoUrl = rtrim(config('app.internal_url'), '/') . '/storage/' . $videoPath;
+        $visionUrl = rtrim(config('services.vision.url'), '/') . '/checkin/video-multi';
 
         try {
-            $response = Http::timeout(30)->post($visionUrl, [
-                'image_path' => $photoUrl,
+            // No early exit on this endpoint (see checkin_video_multi's own
+            // docstring) — it has to read through the whole clip, running full
+            // YOLO detection + tracking + face-matching per sampled frame on
+            // CPU-only inference. 120s wasn't enough for a multi-minute 4K
+            // clip (confirmed via a real 502 timeout) — 900s matches PHP's own
+            // raised max_execution_time so neither layer cuts it off first.
+            $response = Http::timeout(900)->post($visionUrl, [
+                'source' => $videoUrl,
             ]);
         } catch (\Throwable $e) {
             Log::error('Checkin vision-service call failed', [
@@ -52,76 +94,95 @@ class CheckinController extends Controller
             ]);
 
             return response()->json([
-                'message' => 'تعذر التعرف على الصورة، حاول مرة أخرى',
+                'message' => 'تعذر التعرف على الفيديو، حاول مرة أخرى',
             ], 502);
         }
 
         $result = $response->json();
-        $matchedJobNum = $result['employee_id'] ?? 'UNKNOWN';
+        $matches = $result['matches'] ?? [];
 
-        // The vision service itself already applies face_thr/reid_thr and
-        // only returns UNKNOWN when nothing clears its own threshold — no
-        // extra confidence gate needed here, just trust its verdict.
-        if ($matchedJobNum === 'UNKNOWN') {
+        if (empty($matches)) {
             return response()->json([
-                'message' => 'لم يتم التعرف على الموظف، حاول مرة أخرى',
-                'match' => $result,
-            ], 422);
-        }
-
-        $employee = Employee::where('job_num', $matchedJobNum)->first();
-
-        if (! $employee) {
-            // The gallery has an identity Hr_SmartPay doesn't recognize — the
-            // employee record was likely deleted after enrollment. Flag it
-            // rather than silently checking in a ghost employee_id.
-            Log::warning('Checkin matched an unknown job_num', [
-                'matched_job_num' => $matchedJobNum,
-            ]);
-
-            return response()->json([
-                'message' => 'لم يتم العثور على بيانات الموظف المطابق',
+                'message' => 'لم يتم التعرف على أي موظف في الفيديو',
+                'result' => $result,
             ], 422);
         }
 
         $today = now()->toDateString();
-        $existing = EmployeeCheckin::where('employee_id', $employee->id)
-            ->where('date', $today)
-            ->first();
+        $checkins = [];
 
-        if ($existing) {
-            return response()->json([
-                'message' => 'تم تسجيل حضورك اليوم مسبقاً',
-                'checkin' => [
+        foreach ($matches as $match) {
+            $matchedJobNum = $match['employee_id'] ?? null;
+            $confidence = $match['confidence'] ?? 0;
+
+            $employee = $matchedJobNum ? Employee::where('job_num', $matchedJobNum)->first() : null;
+
+            if (! $employee) {
+                // The gallery has an identity Hr_SmartPay doesn't recognize —
+                // the employee record was likely deleted after enrollment.
+                // Flag it rather than silently checking in a ghost employee_id,
+                // but keep processing the rest of the people in this clip.
+                Log::warning('Checkin video matched an unknown job_num', [
+                    'matched_job_num' => $matchedJobNum,
+                ]);
+
+                $checkins[] = [
+                    'job_num' => $matchedJobNum,
+                    'status' => 'unrecognized_employee',
+                ];
+                continue;
+            }
+
+            $existing = EmployeeCheckin::where('employee_id', $employee->id)
+                ->where('date', $today)
+                ->first();
+
+            if ($existing) {
+                $checkins[] = [
                     'employee_id' => $employee->id,
                     'name' => $employee->name,
+                    'status' => 'already_checked_in',
                     'checked_in_at' => $existing->checked_in_at,
-                ],
-            ], 409);
-        }
+                ];
+                continue;
+            }
 
-        $checkin = EmployeeCheckin::create([
-            'employee_id' => $employee->id,
-            'date' => $today,
-            'checked_in_at' => now(),
-            'confidence' => $result['confidence'] ?? 0,
-            'method' => $result['method'] ?? 'face',
-            'photo_path' => $photoPath,
-        ]);
+            $checkin = EmployeeCheckin::create([
+                'employee_id' => $employee->id,
+                'date' => $today,
+                'checked_in_at' => now(),
+                'confidence' => $confidence,
+                'method' => 'face',
+                'photo_path' => $videoPath,
+            ]);
 
-        return response()->json([
-            'message' => 'تم تسجيل الحضور بنجاح',
-            'checkin' => [
+            $checkins[] = [
                 'employee_id' => $employee->id,
                 'name' => $employee->name,
-                'date' => $checkin->date->format('Y-m-d'),
+                'status' => 'checked_in',
                 'checked_in_at' => $checkin->checked_in_at,
                 'confidence' => $checkin->confidence,
-                'method' => $checkin->method,
-            ],
+            ];
+        }
+
+        return response()->json([
+            'message' => 'تمت معالجة الفيديو',
+            'checkins' => $checkins,
+            'num_tracks' => $result['num_tracks'] ?? count($matches),
         ], 201);
     }
 
+    #[OA\Get(
+        path: '/checkins',
+        summary: 'List recorded checkins',
+        tags: ['Checkin'],
+        security: [['bearerAuth' => []]],
+        parameters: [
+            new OA\Parameter(name: 'employee_id', in: 'query', required: false, schema: new OA\Schema(type: 'integer')),
+            new OA\Parameter(name: 'date', in: 'query', required: false, schema: new OA\Schema(type: 'string', format: 'date')),
+        ],
+        responses: [new OA\Response(response: 200, description: 'Matching checkins.')],
+    )]
     public function index(Request $request)
     {
         $query = EmployeeCheckin::query()->with('employee:id,name,job_num');

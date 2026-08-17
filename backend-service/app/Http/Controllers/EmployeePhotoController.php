@@ -7,6 +7,7 @@ use App\Models\Employee;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use OpenApi\Attributes as OA;
 
 class EmployeePhotoController extends Controller
 {
@@ -26,6 +27,14 @@ class EmployeePhotoController extends Controller
         }
     }
 
+    #[OA\Get(
+        path: '/employees/{id}/photos',
+        summary: 'List an employee\'s enrolled face/body photos',
+        tags: ['Employee Photos'],
+        security: [['bearerAuth' => []]],
+        parameters: [new OA\Parameter(name: 'id', in: 'path', required: true, schema: new OA\Schema(type: 'integer'))],
+        responses: [new OA\Response(response: 200, description: 'Enrolled photos.')],
+    )]
     public function index($employeeId)
     {
         $employee = Employee::findOrFail($employeeId);
@@ -45,6 +54,27 @@ class EmployeePhotoController extends Controller
      * they already have. Additive — this does not replace existing photos,
      * use destroy() to remove a specific one first if needed.
      */
+    #[OA\Post(
+        path: '/employees/{id}/photos',
+        summary: 'Add face/body photos for an employee (queues vision-service enrollment)',
+        tags: ['Employee Photos'],
+        security: [['bearerAuth' => []]],
+        parameters: [new OA\Parameter(name: 'id', in: 'path', required: true, schema: new OA\Schema(type: 'integer'))],
+        requestBody: new OA\RequestBody(
+            required: true,
+            content: new OA\MediaType(
+                mediaType: 'multipart/form-data',
+                schema: new OA\Schema(properties: [
+                    new OA\Property(property: 'face_images[]', type: 'array', items: new OA\Items(type: 'string', format: 'binary')),
+                    new OA\Property(property: 'body_images[]', type: 'array', items: new OA\Items(type: 'string', format: 'binary')),
+                ]),
+            ),
+        ),
+        responses: [
+            new OA\Response(response: 201, description: 'Photos added, enrollment queued.'),
+            new OA\Response(response: 422, description: 'No face or body image provided.'),
+        ],
+    )]
     public function store(Request $request, $employeeId)
     {
         $employee = Employee::findOrFail($employeeId);
@@ -86,6 +116,17 @@ class EmployeePhotoController extends Controller
         ], 201);
     }
 
+    #[OA\Delete(
+        path: '/employees/{id}/photos/{photoId}',
+        summary: 'Delete an employee photo (re-queues vision-service enrollment)',
+        tags: ['Employee Photos'],
+        security: [['bearerAuth' => []]],
+        parameters: [
+            new OA\Parameter(name: 'id', in: 'path', required: true, schema: new OA\Schema(type: 'integer')),
+            new OA\Parameter(name: 'photoId', in: 'path', required: true, schema: new OA\Schema(type: 'integer')),
+        ],
+        responses: [new OA\Response(response: 200, description: 'Photo deleted.')],
+    )]
     public function destroy($employeeId, $photoId)
     {
         $employee = Employee::findOrFail($employeeId);

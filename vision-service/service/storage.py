@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Generator
 
 
+
 def _is_stream(source: str) -> bool:
     """True for sources cv2.VideoCapture can open directly without a local file."""
     return (
@@ -58,6 +59,15 @@ def resolve_source(source: str) -> Generator[str, None, None]:
 
     # ── HTTP / HTTPS ───────────────────────────────────────────────────────────
     if source.startswith("http://") or source.startswith("https://"):
+        # Tried opening these URLs directly via cv2/ffmpeg to skip the local
+        # download entirely (avoids staging a second full copy of every
+        # video). Reverted: cv2.VideoCapture(url).isOpened() returned True
+        # even when the backing server (PHP's built-in dev server, not a real
+        # production HTTP server) couldn't sustain the full sequential stream
+        # — confirmed via a real test that came back with frames_read: 0
+        # despite "opening" successfully. Full download is slower but actually
+        # correct against this stack; revisit if backend-service ever moves
+        # off `php -S`.
         tmp = tempfile.NamedTemporaryFile(suffix=_suffix(source), delete=False)
         tmp.close()
         try:

@@ -5,9 +5,31 @@ namespace App\Http\Controllers;
 use App\Models\Camera;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
+use OpenApi\Attributes as OA;
 
 class CameraController extends Controller
 {
+    #[OA\Post(
+        path: '/camera/add',
+        summary: 'Register a camera with its uploaded footage',
+        tags: ['Cameras'],
+        security: [['bearerAuth' => []]],
+        requestBody: new OA\RequestBody(
+            required: true,
+            content: new OA\MediaType(
+                mediaType: 'multipart/form-data',
+                schema: new OA\Schema(
+                    required: ['name', 'zone_id', 'video'],
+                    properties: [
+                        new OA\Property(property: 'name', type: 'string', example: 'Main Entrance'),
+                        new OA\Property(property: 'zone_id', type: 'integer', example: 1),
+                        new OA\Property(property: 'video', type: 'string', format: 'binary', description: 'mp4/mov/avi/mkv, up to 500MB.'),
+                    ],
+                ),
+            ),
+        ),
+        responses: [new OA\Response(response: 201, description: 'Camera created.')],
+    )]
     public function add_camera(Request $request)
     {
         $request->validate([
@@ -37,6 +59,13 @@ class CameraController extends Controller
         ], 201);
     }
 
+    #[OA\Get(
+        path: '/camera/get',
+        summary: 'List cameras',
+        tags: ['Cameras'],
+        security: [['bearerAuth' => []]],
+        responses: [new OA\Response(response: 200, description: 'All cameras with their zone and video URL.')],
+    )]
     public function get_cameras()
     {
         $cameras = Camera::with('zone')

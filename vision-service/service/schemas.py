@@ -94,6 +94,28 @@ class CheckinVideoResponse(BaseModel):
     skipped_no_face: int = Field(..., description="Frames that passed gates but had no detectable person.")
 
 
+class CheckinVideoMatch(BaseModel):
+    """One distinct identified person from a multi-person checkin scan."""
+    employee_id: str = Field(..., description="Matched employee ID.")
+    confidence: float = Field(..., description="Best face-match confidence (0-1) seen for this person's track.")
+
+
+class CheckinVideoMultiResponse(BaseModel):
+    """Result of scanning a video for every distinct person, not just the most prominent one.
+
+    Use this instead of /checkin/video when a clip may contain more than one
+    person you need to identify (e.g. several employees passing the same
+    camera) — /checkin/video's early exit stops at the first confident match
+    and would miss anyone appearing later in the clip.
+    """
+    matches: List[CheckinVideoMatch] = Field(
+        ..., description="One entry per distinct employee identified (UNKNOWN/uncommitted tracks excluded)."
+    )
+    num_tracks: int = Field(..., description="Number of distinct tracked people that reached a committed identity.")
+    frames_read: int = Field(..., description="Total frames pulled from the source.")
+    frames_processed: int = Field(..., description="Frames actually run through detection/tracking (after stride).")
+
+
 # ── Events ────────────────────────────────────────────────────────────────────
 
 class JobSubmitResponse(BaseModel):

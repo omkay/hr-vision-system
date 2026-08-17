@@ -436,10 +436,12 @@ function fillCameraSelects() {
 async function processCamera(id) {
   if (!requireAuth()) return;
   showProcessingResult('processing camera #' + id + ' …');
+  clearJobLog();
   try {
     const data = await api(`/camera/${id}/process`, { method: 'POST' });
     showProcessingResult(JSON.stringify(data, null, 2));
     toast('processing submitted');
+    if (data.job?.id) pollJobStatus(data.job.id);
   } catch (e) {
     showProcessingResult('ERROR: ' + e.message + (e.data ? '\n' + JSON.stringify(e.data, null, 2) : ''));
   }
@@ -456,10 +458,12 @@ async function processBatch() {
   const ids = [...document.querySelectorAll('#batchCameraList input:checked')].map(i => Number(i.value));
   if (!ids.length) { toast('select at least one camera', true); return; }
   showProcessingResult('submitting batch job for cameras: ' + ids.join(', ') + ' …');
+  clearJobLog();
   try {
     const data = await api('/cameras/process-batch', { method: 'POST', body: { camera_ids: ids } });
     showProcessingResult(JSON.stringify(data, null, 2));
     toast('batch processing submitted');
+    if (data.job?.id) pollJobStatus(data.job.id);
   } catch (e) {
     showProcessingResult('ERROR: ' + e.message + (e.data ? '\n' + JSON.stringify(e.data, null, 2) : ''));
   }
@@ -469,26 +473,85 @@ function showProcessingResult(text) {
   document.getElementById('processingResult').textContent = text;
 }
 
+/* ------------------------ Job status polling ------------------------
+   Rather than tailing docker container logs (would need exposing the
+   docker socket to a container — real security/complexity cost for a
+   test UI), this polls the vision_jobs row Laravel already maintains
+   (PollVisionEventsJob updates it queued -> running -> done|error as it
+   polls the vision service). Cheap, reuses existing infrastructure, no
+   new moving parts. */
+
+let jobLogTimer = null;
+
+function clearJobLog() {
+  if (jobLogTimer) { clearTimeout(jobLogTimer); jobLogTimer = null; }
+  const el = document.getElementById('jobLog');
+  if (el) el.textContent = '';
+}
+
+function appendJobLog(line) {
+  const el = document.getElementById('jobLog');
+  if (!el) return;
+  const ts = new Date().toLocaleTimeString();
+  el.textContent += `[${ts}] ${line}\n`;
+  el.scrollTop = el.scrollHeight;
+}
+
+async function pollJobStatus(jobId, attempt = 0) {
+  const maxAttempts = 60; // ~5 min at a 5s interval, plenty for these clip lengths
+  try {
+    const data = await api(`/vision-jobs/${jobId}`);
+    appendJobLog(`job #${jobId} (${(data.cameras || []).join(', ') || 'camera'}) — status: ${data.status}`);
+    if (data.status === 'done') {
+      appendJobLog('done — check the events panel below.');
+      return;
+    }
+    if (data.status === 'error') {
+      appendJobLog('error: ' + (data.error_message || 'unknown error'));
+      return;
+    }
+  } catch (e) {
+    appendJobLog('poll failed: ' + e.message);
+  }
+  if (attempt >= maxAttempts) {
+    appendJobLog('giving up polling after ' + maxAttempts + ' attempts — check manually.');
+    return;
+  }
+  jobLogTimer = setTimeout(() => pollJobStatus(jobId, attempt + 1), 5000);
+}
+
+function trackExistingJob() {
+  const id = document.getElementById('trackJobIdInput').value.trim();
+  if (!id) { toast('enter a job id', true); return; }
+  showProcessingResult(`tracking existing job #${id} (not re-submitting anything) …`);
+  clearJobLog();
+  pollJobStatus(id);
+}
+
 async function loadEvents() {
   if (!requireAuth()) return;
   const cameraId = document.getElementById('eventsCameraSelect').value;
-  if (!cameraId) { toast('pick a camera to view events for', true); return; }
   const params = {
     employee_id: document.getElementById('eventsEmployeeFilter').value,
     event_type: document.getElementById('eventsTypeFilter').value,
     date: document.getElementById('eventsDateFilter').value,
   };
+  // No camera picked = "any camera" → hit the aggregate /events endpoint
+  // instead of the per-camera one, so this doubles as a single combined view
+  // across everything processed so far.
+  const path = cameraId ? `/camera/${cameraId}/events` : '/events';
   try {
-    const data = await api(`/camera/${cameraId}/events`, { params });
-    renderEvents(data.events || data.data || []);
+    const data = await api(path, { params });
+    renderEvents(data.events || data.data || [], !cameraId);
   } catch (e) { toast('load events failed: ' + e.message, true); }
 }
 
-function renderEvents(events) {
+function renderEvents(events, showCamera = false) {
   const el = document.getElementById('eventsTable');
   if (!events.length) { el.innerHTML = '<p class="muted">no events (yet — processing may still be running in the background)</p>'; return; }
-  el.innerHTML = `<table><thead><tr><th>Type</th><th>Employee</th><th>Zone</th><th>Start–End (s)</th><th>Duration (s)</th></tr></thead><tbody>
+  el.innerHTML = `<table><thead><tr>${showCamera ? '<th>Camera</th>' : ''}<th>Type</th><th>Employee</th><th>Zone</th><th>Start–End (s)</th><th>Duration (s)</th></tr></thead><tbody>
     ${events.map(ev => `<tr>
+      ${showCamera ? `<td>${esc(ev.camera_name || ev.camera_id)}</td>` : ''}
       <td><span class="pill info">${esc(ev.event_type)}</span></td>
       <td>${ev.employee_name ? esc(ev.employee_name) + ' (#' + esc(ev.job_num) + ')' : '<span class="muted">unknown</span>'}</td>
       <td>${esc(ev.zone)} <span class="muted">(${esc(ev.zone_type)})</span></td>
@@ -501,7 +564,7 @@ function renderEvents(events) {
 /* ---------------------------- Checkin ---------------------------- */
 
 document.addEventListener('DOMContentLoaded', () => {
-  const input = document.getElementById('checkinPhoto');
+  const input = document.getElementById('checkinVideo');
   if (input) {
     input.addEventListener('change', () => {
       const preview = document.getElementById('checkinPreview');
@@ -517,23 +580,44 @@ document.addEventListener('DOMContentLoaded', () => {
 
 async function submitCheckin() {
   if (!requireAuth()) return;
-  const file = document.getElementById('checkinPhoto').files[0];
-  if (!file) { toast('pick a photo', true); return; }
+  const file = document.getElementById('checkinVideo').files[0];
+  if (!file) { toast('pick a video', true); return; }
   const fd = new FormData();
-  fd.append('photo', file);
+  fd.append('video', file);
   const resultEl = document.getElementById('checkinResult');
-  resultEl.textContent = 'submitting…';
+  resultEl.textContent = 'submitting — scanning the whole clip, this can take a while…';
   try {
     const data = await api('/checkin', { method: 'POST', body: fd, isForm: true });
-    resultEl.innerHTML = `<span class="pill ok">201 matched</span>\n` + JSON.stringify(data, null, 2);
-    toast('checkin recorded');
+    renderCheckinVideoResult(data.checkins || []);
+    toast(`checkin processed — ${(data.checkins || []).length} identified`);
     loadCheckins();
   } catch (e) {
-    const pill = e.status === 409 ? '<span class="pill warn">409 already checked in today</span>'
-      : e.status === 422 ? '<span class="pill err">422 not recognized</span>'
+    const pill = e.status === 422 ? '<span class="pill err">422 nobody recognized</span>'
       : `<span class="pill err">${e.status || 'error'}</span>`;
     resultEl.innerHTML = pill + '\n' + (e.message || '') + (e.data ? '\n' + JSON.stringify(e.data, null, 2) : '');
   }
+}
+
+const CHECKIN_STATUS_PILL = {
+  checked_in: 'ok',
+  already_checked_in: 'warn',
+  unrecognized_employee: 'err',
+};
+
+function renderCheckinVideoResult(checkins) {
+  const resultEl = document.getElementById('checkinResult');
+  if (!checkins.length) {
+    resultEl.innerHTML = '<span class="pill err">nobody identified in this clip</span>';
+    return;
+  }
+  resultEl.innerHTML = `<table><thead><tr><th>Employee</th><th>Status</th><th>Confidence</th><th>Checked in at</th></tr></thead><tbody>
+    ${checkins.map(c => `<tr>
+      <td>${c.name ? esc(c.name) : (c.job_num ? 'job #' + esc(c.job_num) : '<span class="muted">—</span>')}</td>
+      <td><span class="pill ${CHECKIN_STATUS_PILL[c.status] || 'info'}">${esc(c.status)}</span></td>
+      <td>${c.confidence != null ? esc(c.confidence) : '<span class="muted">—</span>'}</td>
+      <td>${c.checked_in_at ? esc(c.checked_in_at) : '<span class="muted">—</span>'}</td>
+    </tr>`).join('')}
+  </tbody></table>`;
 }
 
 /* ---------------------------- Checkins list ---------------------------- */
@@ -664,11 +748,17 @@ function buildLayout() {
     <div class="card">
       <h2>Job submission result</h2>
       <div class="result-box" id="processingResult">no request made yet</div>
+      <h2 style="margin-top:14px">Job status log <span class="muted">(polls every 5s until done/error — no docker log tailing needed)</span></h2>
+      <div class="row" style="margin-bottom:8px">
+        <div class="field"><label>Track existing job by ID</label><input id="trackJobIdInput" type="number" placeholder="e.g. 7" style="min-width:100px"></div>
+        <button class="btn ghost" onclick="trackExistingJob()">track</button>
+      </div>
+      <div class="result-box" id="jobLog" style="min-height:60px"></div>
     </div>
     <div class="card">
       <h2>Activity events</h2>
       <div class="row">
-        <div class="field"><label>Camera</label><select id="eventsCameraSelect" class="camera-select"></select></div>
+        <div class="field"><label>Camera <span class="muted">(blank = all)</span></label><select id="eventsCameraSelect" class="camera-select"></select></div>
         <div class="field"><label>Employee</label><select id="eventsEmployeeFilter" class="employee-select"><option value="">— any —</option></select></div>
         <div class="field"><label>Event type</label>
           <select id="eventsTypeFilter">
@@ -688,12 +778,13 @@ function buildLayout() {
 
   <div class="tab" data-tab="4">
     <div class="card">
-      <h2>Simulate checkin (kiosk photo)</h2>
+      <h2>Simulate checkin (kiosk/entrance video)</h2>
       <div class="row">
-        <div class="field"><label>Photo *</label><input id="checkinPhoto" type="file" accept="image/*"></div>
+        <div class="field"><label>Video *</label><input id="checkinVideo" type="file" accept="video/mp4,video/quicktime,.mp4,.mov,.avi,.mkv"></div>
         <button class="btn" onclick="submitCheckin()">submit checkin</button>
       </div>
-      <img id="checkinPreview" class="checkin-photo-preview" style="display:none">
+      <small class="hint">Identifies every distinct employee in the clip — one video can produce several checkin records.</small>
+      <video id="checkinPreview" class="checkin-photo-preview" style="display:none" controls></video>
       <h2 style="margin-top:16px">Result</h2>
       <div class="result-box" id="checkinResult">no attempt yet</div>
     </div>

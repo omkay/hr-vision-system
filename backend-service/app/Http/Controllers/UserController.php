@@ -5,9 +5,36 @@ namespace App\Http\Controllers;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
+use OpenApi\Attributes as OA;
 
 class UserController extends Controller
 {
+    #[OA\Post(
+        path: '/login',
+        summary: 'Log in and obtain a bearer token',
+        tags: ['Auth'],
+        requestBody: new OA\RequestBody(
+            required: true,
+            content: new OA\JsonContent(
+                required: ['user_name', 'password'],
+                properties: [
+                    new OA\Property(property: 'user_name', type: 'string', example: 'it'),
+                    new OA\Property(property: 'password', type: 'string', format: 'password', example: 'It123#321'),
+                ],
+            ),
+        ),
+        responses: [
+            new OA\Response(
+                response: 200,
+                description: 'Login succeeded — any prior tokens for this user are revoked first.',
+                content: new OA\JsonContent(properties: [
+                    new OA\Property(property: 'token', type: 'string'),
+                    new OA\Property(property: 'user', type: 'object'),
+                ]),
+            ),
+            new OA\Response(response: 401, description: 'Invalid username or password.'),
+        ],
+    )]
     public function login(Request $request)
     {
         $request->validate([

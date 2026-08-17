@@ -11,7 +11,8 @@ import pandas as pd
 
 from .config import (
     DEFAULT_DET_CONF, DEFAULT_DET_IOU, DEFAULT_FACE_THR, DEFAULT_FUSE_WIN,
-    DEFAULT_MAX_FRAMES, DEFAULT_PROX_PX, DEFAULT_REID_THR, DEFAULT_STRIDE, OUT_DIR,
+    DEFAULT_MAX_FRAMES, DEFAULT_PROX_PX, DEFAULT_REID_THR, DEFAULT_STRIDE,
+    DETECTION_MAX_DIM, OUT_DIR,
 )
 from .events_engine import EventEngine, Zone, load_zones_for_video
 from .schemas import ZoneDefinition
@@ -19,6 +20,16 @@ from .gallery import EmployeeGallery
 from .identity import IdentityFuser, UNKNOWN_LABEL
 from .models import get_detector, get_face_embedder, get_reid_embedder
 from .storage import resolve_source
+
+
+def _detection_scale(width: int, height: int, max_dim: int = DETECTION_MAX_DIM) -> float:
+    """Scale factor to bring the longest side down to max_dim (1.0 = no change)."""
+    longest = max(width, height)
+    return 1.0 if longest <= max_dim else max_dim / longest
+
+
+def _scaled_size(width: int, height: int, scale: float) -> tuple[int, int]:
+    return max(1, round(width * scale)), max(1, round(height * scale))
 
 
 def run_pipeline(
@@ -89,8 +100,13 @@ def _run_pipeline_local(
     if not cap.isOpened():
         raise RuntimeError(f"Could not open video: {video_path}")
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-    W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    native_W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    native_H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    # Downscale once up front — every frame is resized to this before anything
+    # else touches it, so zones/detections/crops/annotated output all stay in
+    # one consistent coordinate space with no separate rescale bookkeeping.
+    det_scale = _detection_scale(native_W, native_H)
+    W, H = _scaled_size(native_W, native_H, det_scale) if det_scale != 1.0 else (native_W, native_H)
 
     annotated_path: Optional[Path] = None
     writer = None
@@ -128,6 +144,8 @@ def _run_pipeline_local(
             if idx % stride != 0:
                 idx += 1
                 continue
+            if det_scale != 1.0:
+                frame = cv2.resize(frame, (W, H), interpolation=cv2.INTER_AREA)
             dets = detector.track(frame, conf=det_conf, iou=det_iou)
             people, phones, laptops, monitors = [], [], [], []
             for d in dets:
@@ -364,3 +382,160 @@ def _checkin_video_local(
     best = max((c for c in candidates if c["employee_id"] == best_id),
                key=lambda c: c["confidence"])
     return {**best, "votes": dict(votes), **stats}
+
+
+def checkin_video_multi(
+    source: str,
+    gallery: EmployeeGallery,
+    *,
+    face_thr: float = DEFAULT_FACE_THR,
+    reid_thr: float = DEFAULT_REID_THR,
+    stride: int = DEFAULT_STRIDE,
+    max_frames: int = DEFAULT_MAX_FRAMES,
+    det_conf: float = DEFAULT_DET_CONF,
+    det_iou: float = DEFAULT_DET_IOU,
+) -> dict:
+    """Identify EVERY distinct person appearing in a video — not just one.
+
+    checkin_video() answers "who is the most prominent person here", with an
+    early exit as soon as it's confident about anyone — correct for a kiosk
+    "one person walks up" scenario, but wrong for "who all passed by this
+    camera", since early exit stops scanning the instant the FIRST person is
+    confidently matched, before the rest of the video (and anyone else in it)
+    is ever looked at.
+
+    This instead tracks every person via ByteTrack (the same tracker the
+    zone/events pipeline uses) and resolves an identity per track with the
+    same IdentityFuser — a rolling weighted vote per track_id that commits
+    once a track has enough consistent evidence. No early exit: completeness
+    is the goal here, not speed, so the whole video (or max_frames) is scanned.
+
+    Returns a dict with:
+        matches           — list of {employee_id, confidence}, one per
+                             distinct identified person (UNKNOWN tracks and
+                             tracks that never accumulated enough votes to
+                             commit are excluded — see IdentityFuser.update).
+        num_tracks        — how many committed identity tracks were found.
+        frames_read / frames_processed — same bookkeeping as checkin_video().
+    """
+    with resolve_source(source) as local_path:
+        return _checkin_video_multi_local(
+            local_path, gallery,
+            face_thr=face_thr, reid_thr=reid_thr,
+            stride=stride, max_frames=max_frames,
+            det_conf=det_conf, det_iou=det_iou,
+        )
+
+
+def _checkin_video_multi_local(
+    source: str,
+    gallery: EmployeeGallery,
+    *,
+    face_thr: float = DEFAULT_FACE_THR,
+    reid_thr: float = DEFAULT_REID_THR,
+    stride: int = DEFAULT_STRIDE,
+    max_frames: int = DEFAULT_MAX_FRAMES,
+    det_conf: float = DEFAULT_DET_CONF,
+    det_iou: float = DEFAULT_DET_IOU,
+) -> dict:
+    """Internal: run checkin_video_multi on a local path or stream URI."""
+    detector = get_detector()
+    face_emb = get_face_embedder()
+    reid_emb = get_reid_embedder()
+
+    # Reset ByteTrack state so this video starts with clean track IDs,
+    # same as _run_pipeline_local does for the zone/events path.
+    detector.reset_tracker()
+
+    fuser = IdentityFuser(gallery, face_emb, reid_emb,
+                          face_thr=face_thr, reid_thr=reid_thr)
+
+    cap = cv2.VideoCapture(source if not str(source).isdigit() else int(source))
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open video source: {source}")
+
+    stats = dict(frames_read=0, frames_processed=0)
+    # track_id -> (employee_id, best face-match confidence seen for that track).
+    # Confidence is tracked from match_face() directly (not IdentityFuser's
+    # internal vote weight) so the reported number means the same thing as
+    # checkin()/checkin_video()'s "confidence": a cosine similarity score.
+    track_best: dict = {}
+    idx = processed = 0
+
+    try:
+        while processed < max_frames:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            stats["frames_read"] += 1
+
+            if idx % stride != 0:
+                idx += 1
+                continue
+
+            native_h, native_w = frame.shape[:2]
+            scale = _detection_scale(native_w, native_h)
+            if scale != 1.0:
+                frame = cv2.resize(frame, _scaled_size(native_w, native_h, scale),
+                                    interpolation=cv2.INTER_AREA)
+            H, W = frame.shape[:2]
+            dets = detector.track(frame, conf=det_conf, iou=det_iou)
+            for d in dets:
+                if d["cls_name"] != "person":
+                    continue
+                x1, y1, x2, y2 = d["bbox"]
+                x1, y1 = max(0, x1), max(0, y1)
+                x2, y2 = min(W, x2), min(H, y2)
+                crop = frame[y1:y2, x1:x2]
+                if crop.size == 0:
+                    continue
+
+                track_id = d["track_id"]
+                face_match = fuser.match_face(crop)
+                confidence = face_match[1] if face_match is not None else 0.0
+
+                # update() runs the actual face/ReID match again internally
+                # to drive the per-track committed vote — slightly redundant
+                # with match_face() above, but keeps this function a thin
+                # wrapper around the existing, already-tested fusion logic
+                # rather than re-implementing the commit rule here too.
+                name = fuser.update(track_id, crop)
+                if name == UNKNOWN_LABEL:
+                    continue
+
+                prev = track_best.get(track_id)
+                if prev is None or confidence > prev[1]:
+                    track_best[track_id] = (name, confidence)
+
+            idx += 1
+            processed += 1
+    finally:
+        cap.release()
+
+    # Only report tracks IdentityFuser actually committed to an identity —
+    # same bar checkin_video() implicitly uses via vote aggregation, so a
+    # fleeting misdetection can't show up as "this person was here".
+    committed_tracks = {
+        track_id: name for track_id, name in fuser.committed.items()
+        if name != UNKNOWN_LABEL
+    }
+
+    # A person can span multiple tracks if they leave and re-enter frame —
+    # collapse to one entry per employee, keeping their best confidence.
+    by_employee: dict = {}
+    for track_id, name in committed_tracks.items():
+        conf = track_best.get(track_id, (name, 0.0))[1]
+        if name not in by_employee or conf > by_employee[name]:
+            by_employee[name] = conf
+
+    matches = [
+        {"employee_id": name, "confidence": round(conf, 4)}
+        for name, conf in sorted(by_employee.items(), key=lambda kv: -kv[1])
+    ]
+
+    stats["frames_processed"] = processed
+    return {
+        "matches": matches,
+        "num_tracks": len(committed_tracks),
+        **stats,
+    }
