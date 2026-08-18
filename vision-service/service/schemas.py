@@ -112,6 +112,15 @@ class CheckinVideoMultiResponse(BaseModel):
         ..., description="One entry per distinct employee identified (UNKNOWN/uncommitted tracks excluded)."
     )
     num_tracks: int = Field(..., description="Number of distinct tracked people that reached a committed identity.")
+    session_date: str = Field(
+        ...,
+        description=(
+            "Date (YYYY-MM-DD) this checkin's daily body fingerprints were saved under. "
+            "Pass this same value as `session_date` on `POST /events/run` for any zone "
+            "videos from the same day, so they match against today's fresh appearance "
+            "instead of the static enrollment gallery — see IdentityFuser.match_reid."
+        ),
+    )
     frames_read: int = Field(..., description="Total frames pulled from the source.")
     frames_processed: int = Field(..., description="Frames actually run through detection/tracking (after stride).")
 

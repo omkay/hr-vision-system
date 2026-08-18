@@ -2,17 +2,27 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\Employee;
-use App\Models\EmployeeCheckin;
+use App\Models\ActivityEvent;
+use App\Services\CheckinService;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Log;
 use OpenApi\Attributes as OA;
 
 /**
- * Daily attendance checkin — "who was present today" — distinct from the
- * (separate) zone-based activity tracking feature.
- * See INTEGRATION-TODO-multi-photo-enrollment.md section 2 for the design.
+ * Daily attendance checkin — "who was present today" — now unified into the
+ * same activity_events "chain of events" that zone/events processing writes
+ * to (event_type = 'checkin'), rather than a separate employee_checkins
+ * table. This is what lets reporting query one timeline by date / employee /
+ * zone instead of joining two tables. See the 2026_08_18 migration for the
+ * schema change (camera_id/vision_job_id made nullable — a checkin event has
+ * neither: the entrance/kiosk video isn't tied to a registered Camera row,
+ * and checkin runs synchronously, not through the async job store zone
+ * processing uses).
+ *
+ * A checkin also seeds that day's body-fingerprint gallery in vision-service
+ * (see daily_gallery.py / IdentityFuser.match_reid) — the `session_date`
+ * returned here should be passed along to zone/events processing for the
+ * same day so cross-camera ReID matching prefers today's actual appearance
+ * over the static enrollment-time gallery.
  *
  * Identity is discovered FROM the footage, not supplied by the caller —
  * employees have no login accounts of their own in this app, so a kiosk or
@@ -29,6 +39,10 @@ use OpenApi\Attributes as OA;
  */
 class CheckinController extends Controller
 {
+    public function __construct(private CheckinService $checkinService)
+    {
+    }
+
     #[OA\Post(
         path: '/checkin',
         summary: 'Kiosk/entrance video checkin — identifies every distinct employee in the clip',
@@ -63,113 +77,9 @@ class CheckinController extends Controller
             'video' => 'required|file|mimes:mp4,mov,avi,mkv|max:512000',
         ]);
 
-        $videoPath = $request->file('video')->store('checkins', 'public');
-        $videoUrl = rtrim(config('app.internal_url'), '/') . '/storage/' . $videoPath;
-        $visionUrl = rtrim(config('services.vision.url'), '/') . '/checkin/video-multi';
+        $result = $this->checkinService->identifyAndRecordCheckins($request->file('video'));
 
-        try {
-            // No early exit on this endpoint (see checkin_video_multi's own
-            // docstring) — it has to read through the whole clip, running full
-            // YOLO detection + tracking + face-matching per sampled frame on
-            // CPU-only inference. 120s wasn't enough for a multi-minute 4K
-            // clip (confirmed via a real 502 timeout) — 900s matches PHP's own
-            // raised max_execution_time so neither layer cuts it off first.
-            $response = Http::timeout(900)->post($visionUrl, [
-                'source' => $videoUrl,
-            ]);
-        } catch (\Throwable $e) {
-            Log::error('Checkin vision-service call failed', [
-                'error' => $e->getMessage(),
-            ]);
-
-            return response()->json([
-                'message' => 'تعذر الاتصال بخدمة التعرف، حاول مرة أخرى',
-            ], 502);
-        }
-
-        if ($response->failed()) {
-            Log::warning('Checkin vision-service call returned an error', [
-                'status' => $response->status(),
-                'body' => $response->body(),
-            ]);
-
-            return response()->json([
-                'message' => 'تعذر التعرف على الفيديو، حاول مرة أخرى',
-            ], 502);
-        }
-
-        $result = $response->json();
-        $matches = $result['matches'] ?? [];
-
-        if (empty($matches)) {
-            return response()->json([
-                'message' => 'لم يتم التعرف على أي موظف في الفيديو',
-                'result' => $result,
-            ], 422);
-        }
-
-        $today = now()->toDateString();
-        $checkins = [];
-
-        foreach ($matches as $match) {
-            $matchedJobNum = $match['employee_id'] ?? null;
-            $confidence = $match['confidence'] ?? 0;
-
-            $employee = $matchedJobNum ? Employee::where('job_num', $matchedJobNum)->first() : null;
-
-            if (! $employee) {
-                // The gallery has an identity Hr_SmartPay doesn't recognize —
-                // the employee record was likely deleted after enrollment.
-                // Flag it rather than silently checking in a ghost employee_id,
-                // but keep processing the rest of the people in this clip.
-                Log::warning('Checkin video matched an unknown job_num', [
-                    'matched_job_num' => $matchedJobNum,
-                ]);
-
-                $checkins[] = [
-                    'job_num' => $matchedJobNum,
-                    'status' => 'unrecognized_employee',
-                ];
-                continue;
-            }
-
-            $existing = EmployeeCheckin::where('employee_id', $employee->id)
-                ->where('date', $today)
-                ->first();
-
-            if ($existing) {
-                $checkins[] = [
-                    'employee_id' => $employee->id,
-                    'name' => $employee->name,
-                    'status' => 'already_checked_in',
-                    'checked_in_at' => $existing->checked_in_at,
-                ];
-                continue;
-            }
-
-            $checkin = EmployeeCheckin::create([
-                'employee_id' => $employee->id,
-                'date' => $today,
-                'checked_in_at' => now(),
-                'confidence' => $confidence,
-                'method' => 'face',
-                'photo_path' => $videoPath,
-            ]);
-
-            $checkins[] = [
-                'employee_id' => $employee->id,
-                'name' => $employee->name,
-                'status' => 'checked_in',
-                'checked_in_at' => $checkin->checked_in_at,
-                'confidence' => $checkin->confidence,
-            ];
-        }
-
-        return response()->json([
-            'message' => 'تمت معالجة الفيديو',
-            'checkins' => $checkins,
-            'num_tracks' => $result['num_tracks'] ?? count($matches),
-        ], 201);
+        return response()->json($result['body'], $result['status']);
     }
 
     #[OA\Get(
@@ -185,17 +95,19 @@ class CheckinController extends Controller
     )]
     public function index(Request $request)
     {
-        $query = EmployeeCheckin::query()->with('employee:id,name,job_num');
+        $query = ActivityEvent::query()
+            ->where('event_type', 'checkin')
+            ->with('employee:id,name,job_num');
 
         if ($request->filled('employee_id')) {
             $query->where('employee_id', $request->employee_id);
         }
 
         if ($request->filled('date')) {
-            $query->where('date', $request->date);
+            $query->whereDate('created_at', $request->date);
         }
 
-        $checkins = $query->latest('checked_in_at')->get();
+        $checkins = $query->latest('created_at')->get();
 
         return response()->json([
             'message' => 'سجل الحضور',
@@ -204,8 +116,8 @@ class CheckinController extends Controller
                 'employee_id' => $c->employee_id,
                 'employee_name' => $c->employee->name,
                 'job_num' => $c->employee->job_num,
-                'date' => $c->date->format('Y-m-d'),
-                'checked_in_at' => $c->checked_in_at,
+                'date' => $c->created_at->format('Y-m-d'),
+                'checked_in_at' => $c->created_at,
                 'confidence' => $c->confidence,
                 'method' => $c->method,
             ]),

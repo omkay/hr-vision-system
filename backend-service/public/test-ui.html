@@ -157,7 +157,7 @@ function requireAuth() {
 
 /* ---------------------------- Tabs ---------------------------- */
 
-const TABS = ['Zones', 'Employees', 'Cameras', 'Processing & Events', 'Checkin', 'Checkins'];
+const TABS = ['Zones', 'Employees', 'Cameras', 'Processing & Events', 'Checkin', 'Checkins', 'Day Sequence', 'Reports'];
 let activeTab = 0;
 
 function renderTabsNav() {
@@ -421,8 +421,13 @@ async function deleteCamera(id) {
 
 function fillCameraCheckboxes() {
   const el = document.getElementById('batchCameraList');
-  if (!el) return;
-  el.innerHTML = CAMERAS.map(c => `<label><input type="checkbox" value="${c.id}"> ${esc(c.name)}</label>`).join('') || '<span class="muted">no cameras</span>';
+  if (el) {
+    el.innerHTML = CAMERAS.map(c => `<label><input type="checkbox" value="${c.id}"> ${esc(c.name)}</label>`).join('') || '<span class="muted">no cameras</span>';
+  }
+  const seqEl = document.getElementById('sequenceCameraList');
+  if (seqEl) {
+    seqEl.innerHTML = CAMERAS.map(c => `<label><input type="checkbox" value="${c.id}"> ${esc(c.name)}</label>`).join('') || '<span class="muted">no cameras</span>';
+  }
 }
 
 function fillCameraSelects() {
@@ -648,6 +653,100 @@ function renderCheckins(list) {
   </tbody></table>`;
 }
 
+/* ---------------------------- Day Sequence ---------------------------- */
+/* Orchestrates the new daily flow in one call: checkin video first (seeds
+   that day's body-fingerprint gallery in vision-service), then the chosen
+   zone cameras processed against that same session_date, so cross-camera
+   ReID matching prefers today's fresh appearance over the static
+   enrollment gallery. See CameraProcessingController::processSequence(). */
+
+async function submitSequence() {
+  if (!requireAuth()) return;
+  const video = document.getElementById('sequenceCheckinVideo').files[0];
+  const ids = [...document.querySelectorAll('#sequenceCameraList input:checked')].map(i => Number(i.value));
+  if (!video) { toast('pick a checkin video', true); return; }
+  if (!ids.length) { toast('select at least one zone camera', true); return; }
+
+  const fd = new FormData();
+  fd.append('checkin_video', video);
+  ids.forEach(id => fd.append('camera_ids[]', id));
+
+  const resultEl = document.getElementById('sequenceResult');
+  resultEl.textContent = 'submitting — checkin first, then zone processing, this can take a while…';
+  clearJobLog();
+  try {
+    const data = await api('/process-sequence', { method: 'POST', body: fd, isForm: true });
+    renderSequenceResult(data);
+    toast('sequence submitted — session_date ' + (data.checkin?.session_date || '?'));
+    if (data.job?.id) pollJobStatus(data.job.id);
+    loadCheckins();
+  } catch (e) {
+    resultEl.innerHTML = `<span class="pill err">${e.status || 'error'}</span>\n${e.message || ''}` +
+      (e.data ? '\n' + JSON.stringify(e.data, null, 2) : '');
+  }
+}
+
+function renderSequenceResult(data) {
+  const resultEl = document.getElementById('sequenceResult');
+  const checkins = data.checkin?.checkins || [];
+  const rows = checkins.map(c => `<tr>
+      <td>${c.name ? esc(c.name) : (c.job_num ? 'job #' + esc(c.job_num) : '<span class="muted">—</span>')}</td>
+      <td><span class="pill ${CHECKIN_STATUS_PILL[c.status] || 'info'}">${esc(c.status)}</span></td>
+      <td>${c.confidence != null ? esc(c.confidence) : '<span class="muted">—</span>'}</td>
+    </tr>`).join('');
+  resultEl.innerHTML = `
+    <div><span class="pill info">session_date: ${esc(data.checkin?.session_date || '?')}</span>
+    ${data.job?.id ? `<span class="pill ok">job #${data.job.id} submitted</span>` : ''}</div>
+    <table style="margin-top:8px"><thead><tr><th>Employee</th><th>Status</th><th>Confidence</th></tr></thead>
+    <tbody>${rows || '<tr><td colspan="3" class="muted">nobody identified</td></tr>'}</tbody></table>`;
+}
+
+/* ---------------------------- Reports ---------------------------- */
+
+async function loadReport() {
+  if (!requireAuth()) return;
+  const groupBy = ['date', 'employee', 'zone'].filter(g =>
+    document.getElementById('reportGroup_' + g).checked
+  ).join(',');
+  const params = {
+    group_by: groupBy,
+    employee_id: document.getElementById('reportEmployeeFilter').value,
+    zone: document.getElementById('reportZoneFilter').value,
+    event_type: document.getElementById('reportTypeFilter').value,
+    date_from: document.getElementById('reportDateFrom').value,
+    date_to: document.getElementById('reportDateTo').value,
+  };
+  try {
+    const data = await api('/reports/summary', { params });
+    renderReport(data.groups || [], data.group_by || []);
+  } catch (e) { toast('load report failed: ' + e.message, true); }
+}
+
+function renderReport(groups, groupBy) {
+  const el = document.getElementById('reportTable');
+  if (!groups.length) { el.innerHTML = '<p class="muted">no events match these filters</p>'; return; }
+  const cols = [];
+  if (groupBy.includes('date')) cols.push({ key: 'date', label: 'Date' });
+  if (groupBy.includes('employee')) cols.push({ key: 'employee', label: 'Employee' });
+  if (groupBy.includes('zone')) cols.push({ key: 'zone', label: 'Zone' });
+
+  el.innerHTML = `<table><thead><tr>
+      ${cols.map(c => `<th>${c.label}</th>`).join('')}
+      <th>Event count</th><th>Total duration (s)</th>
+    </tr></thead><tbody>
+    ${groups.map(g => `<tr>
+      ${cols.map(c => {
+        if (c.key === 'employee') {
+          return `<td>${g.employee_name ? esc(g.employee_name) + ' (#' + esc(g.job_num) + ')' : '<span class="muted">unknown</span>'}</td>`;
+        }
+        return `<td>${esc(g[c.key])}</td>`;
+      }).join('')}
+      <td>${esc(g.event_count)}</td>
+      <td>${esc(g.total_duration_s)}</td>
+    </tr>`).join('')}
+  </tbody></table>`;
+}
+
 /* ---------------------------- Boot ---------------------------- */
 
 function refreshAll() {
@@ -767,6 +866,7 @@ function buildLayout() {
             <option value="working">working</option>
             <option value="phone_use">phone_use</option>
             <option value="interaction">interaction</option>
+            <option value="checkin">checkin</option>
           </select>
         </div>
         <div class="field"><label>Date</label><input id="eventsDateFilter" type="date"></div>
@@ -799,6 +899,61 @@ function buildLayout() {
         <button class="btn" onclick="loadCheckins()">filter</button>
       </div>
       <div id="checkinsTable" style="margin-top:10px"></div>
+    </div>
+  </div>
+
+  <div class="tab" data-tab="6">
+    <div class="card">
+      <h2>Process a day's sequence</h2>
+      <small class="hint">Runs the checkin video first (identifies everyone + seeds today's body-fingerprint
+        gallery in vision-service), then processes the selected zone cameras against that same day — so
+        cross-camera ReID matching prefers today's actual appearance over the static enrollment gallery.</small>
+      <div class="row" style="margin-top:10px">
+        <div class="field"><label>Checkin video *</label><input id="sequenceCheckinVideo" type="file" accept="video/mp4,video/quicktime,.mp4,.mov,.avi,.mkv"></div>
+      </div>
+      <div style="margin-top:10px">
+        <label class="muted" style="display:block;margin-bottom:6px">Zone cameras to process</label>
+        <div class="checkbox-list" id="sequenceCameraList"></div>
+      </div>
+      <div style="margin-top:10px"><button class="btn" onclick="submitSequence()">run sequence</button></div>
+    </div>
+    <div class="card">
+      <h2>Result</h2>
+      <div class="result-box" id="sequenceResult">no attempt yet</div>
+    </div>
+  </div>
+
+  <div class="tab" data-tab="7">
+    <div class="card">
+      <h2>Reporting — chain of events</h2>
+      <div class="row">
+        <div class="field">
+          <label>Group by</label>
+          <div class="checkbox-list">
+            <label><input type="checkbox" id="reportGroup_date" checked> date</label>
+            <label><input type="checkbox" id="reportGroup_employee" checked> employee</label>
+            <label><input type="checkbox" id="reportGroup_zone"> zone</label>
+          </div>
+        </div>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <div class="field"><label>Employee</label><select id="reportEmployeeFilter" class="employee-select"><option value="">— any —</option></select></div>
+        <div class="field"><label>Zone</label><input id="reportZoneFilter" placeholder="e.g. entrance"></div>
+        <div class="field"><label>Event type</label>
+          <select id="reportTypeFilter">
+            <option value="">— any —</option>
+            <option value="presence">presence</option>
+            <option value="working">working</option>
+            <option value="phone_use">phone_use</option>
+            <option value="interaction">interaction</option>
+            <option value="checkin">checkin</option>
+          </select>
+        </div>
+        <div class="field"><label>From</label><input id="reportDateFrom" type="date"></div>
+        <div class="field"><label>To</label><input id="reportDateTo" type="date"></div>
+        <button class="btn" onclick="loadReport()">run report</button>
+      </div>
+      <div id="reportTable" style="margin-top:10px"></div>
     </div>
   </div>
   `;

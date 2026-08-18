@@ -89,6 +89,15 @@ class EventsRequest(BaseModel):
         False,
         description="If true, save an annotated MP4 to `outputs/`. Path is returned in the result.",
     )
+    session_date: Optional[str] = Field(
+        None,
+        description=(
+            "Date (YYYY-MM-DD) whose daily body-fingerprint gallery to prefer during "
+            "ReID matching (see `daily_gallery` docs) — normally the `session_date` "
+            "returned by that day's `POST /checkin/video-multi` call. Defaults to "
+            "today. Has no effect if no fingerprints exist yet for that date."
+        ),
+    )
 
     model_config = {
         "json_schema_extra": {
@@ -189,6 +198,7 @@ def run(req: EventsRequest):
         max_frames=req.max_frames,
         prox_px=req.prox_px,
         write_video=req.write_video,
+        session_date=req.session_date,
     )
     return {"job_id": job.id, "status": job.status}
 

@@ -10,6 +10,8 @@ class ActivityEvent extends Model
         'camera_id',
         'vision_job_id',
         'employee_id',
+        'confidence',
+        'method',
         'event_type',
         'start_s',
         'end_s',

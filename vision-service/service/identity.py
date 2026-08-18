@@ -20,13 +20,19 @@ def cosine_matrix(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 class IdentityFuser:
     def __init__(self, gallery, face_emb, reid_emb,
-                 face_thr: float = 0.45, reid_thr: float = 0.75, window: int = 30):
+                 face_thr: float = 0.45, reid_thr: float = 0.75, window: int = 30,
+                 daily_gallery=None):
         self.gallery = gallery
         self.face_emb = face_emb
         self.reid_emb = reid_emb
         self.face_thr = face_thr
         self.reid_thr = reid_thr
         self.window = window
+        # Optional DailyGallery (see daily_gallery.py) — today's fresh
+        # ReID reference, generated from this same employee's checkin video
+        # earlier today. Checked before the static enrollment reid_banks in
+        # match_reid() since it reflects today's actual clothing/appearance.
+        self.daily_gallery = daily_gallery
         self.votes: Dict[int, collections.deque] = collections.defaultdict(
             lambda: collections.deque(maxlen=window)
         )
@@ -42,6 +48,23 @@ class IdentityFuser:
 
     def match_reid(self, crop) -> Optional[Tuple[str, float]]:
         v = self.reid_emb.embed(crop)
+
+        # Prefer today's fresh appearance (see daily_gallery.py) over the
+        # static enrollment bank — same clothes as the checkin video, same
+        # camera network, so similarity is expected to be higher and more
+        # reliable than comparing against whatever photos were on file at
+        # enrollment time, possibly weeks/months old.
+        if self.daily_gallery is not None and self.daily_gallery.reid_banks:
+            best_name, best_s = None, -1.0
+            for name, bank in self.daily_gallery.reid_banks.items():
+                if bank.size == 0:
+                    continue
+                s = float(np.max(bank @ v))
+                if s > best_s:
+                    best_name, best_s = name, s
+            if best_name is not None and best_s >= self.reid_thr:
+                return best_name, best_s
+
         best_name, best_s = None, -1.0
         for name, bank in self.gallery.reid_banks.items():
             if bank.size == 0:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from datetime import date as _date
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
@@ -14,12 +15,20 @@ from .config import (
     DEFAULT_MAX_FRAMES, DEFAULT_PROX_PX, DEFAULT_REID_THR, DEFAULT_STRIDE,
     DETECTION_MAX_DIM, OUT_DIR,
 )
+from . import daily_gallery as daily_gallery_store
 from .events_engine import EventEngine, Zone, load_zones_for_video
 from .schemas import ZoneDefinition
 from .gallery import EmployeeGallery
 from .identity import IdentityFuser, UNKNOWN_LABEL
 from .models import get_detector, get_face_embedder, get_reid_embedder
 from .storage import resolve_source
+
+# Cap on how many body crops we keep per track while scanning a checkin
+# video, purely to bound memory/CPU for the end-of-run ReID embedding batch
+# — a handful of clean crops from across the clip is plenty to build a
+# same-day appearance reference, no need to embed every frame the person
+# appeared in.
+MAX_DAILY_FINGERPRINT_CROPS = 10
 
 
 def _detection_scale(width: int, height: int, max_dim: int = DETECTION_MAX_DIM) -> float:
@@ -48,8 +57,17 @@ def run_pipeline(
     prox_px: int = DEFAULT_PROX_PX,
     write_video: bool = False,
     progress: Optional[Callable[[int, int], None]] = None,
+    session_date: Optional[str] = None,
 ) -> Tuple[pd.DataFrame, Optional[Path]]:
-    """Process a video and return (events_df, annotated_video_path)."""
+    """Process a video and return (events_df, annotated_video_path).
+
+    session_date: which day's daily body-fingerprint gallery (see
+    daily_gallery.py) to prefer during ReID matching, in YYYY-MM-DD form —
+    normally the date of the checkin video that seeded that day's
+    fingerprints for the employees expected in this footage. Defaults to
+    today if omitted. Has no effect if no fingerprints exist yet for that
+    date (falls straight through to the static enrollment gallery).
+    """
     with resolve_source(video_path) as local_path:
         return _run_pipeline_local(
             local_path, gallery,
@@ -59,6 +77,7 @@ def run_pipeline(
             fuse_win=fuse_win, stride=stride,
             max_frames=max_frames, prox_px=prox_px,
             write_video=write_video, progress=progress,
+            session_date=session_date,
         )
 
 
@@ -78,6 +97,7 @@ def _run_pipeline_local(
     prox_px: int = DEFAULT_PROX_PX,
     write_video: bool = False,
     progress: Optional[Callable[[int, int], None]] = None,
+    session_date: Optional[str] = None,
 ) -> Tuple[pd.DataFrame, Optional[Path]]:
     """Internal: run pipeline on a guaranteed-local path."""
     vp = Path(video_path)
@@ -91,10 +111,13 @@ def _run_pipeline_local(
     # Reset ByteTrack state so this video starts with clean track IDs.
     detector.reset_tracker()
 
+    daily = daily_gallery_store.load_daily_gallery(session_date or _date.today().isoformat())
+
     fuser = None
     if gallery is not None and len(gallery.names) > 0:
         fuser = IdentityFuser(gallery, face_emb, reid_emb,
-                              face_thr=face_thr, reid_thr=reid_thr, window=fuse_win)
+                              face_thr=face_thr, reid_thr=reid_thr, window=fuse_win,
+                              daily_gallery=daily)
 
     cap = cv2.VideoCapture(str(vp))
     if not cap.isOpened():
@@ -394,6 +417,7 @@ def checkin_video_multi(
     max_frames: int = DEFAULT_MAX_FRAMES,
     det_conf: float = DEFAULT_DET_CONF,
     det_iou: float = DEFAULT_DET_IOU,
+    session_date: Optional[str] = None,
 ) -> dict:
     """Identify EVERY distinct person appearing in a video — not just one.
 
@@ -410,12 +434,21 @@ def checkin_video_multi(
     once a track has enough consistent evidence. No early exit: completeness
     is the goal here, not speed, so the whole video (or max_frames) is scanned.
 
+    Also treats this scan as "the day's checkin": for every employee who
+    reaches a committed identity, body crops collected from their own
+    track(s) are embedded via ReID and saved as that employee's daily body
+    fingerprint (see daily_gallery.py), keyed by session_date (defaults to
+    today). Zone videos processed later for the same date will then prefer
+    matching against this fresh, same-day appearance over the static
+    enrollment-time bank — see IdentityFuser.match_reid.
+
     Returns a dict with:
         matches           — list of {employee_id, confidence}, one per
                              distinct identified person (UNKNOWN tracks and
                              tracks that never accumulated enough votes to
                              commit are excluded — see IdentityFuser.update).
         num_tracks        — how many committed identity tracks were found.
+        session_date      — the date these daily fingerprints were saved under.
         frames_read / frames_processed — same bookkeeping as checkin_video().
     """
     with resolve_source(source) as local_path:
@@ -424,6 +457,7 @@ def checkin_video_multi(
             face_thr=face_thr, reid_thr=reid_thr,
             stride=stride, max_frames=max_frames,
             det_conf=det_conf, det_iou=det_iou,
+            session_date=session_date,
         )
 
 
@@ -437,6 +471,7 @@ def _checkin_video_multi_local(
     max_frames: int = DEFAULT_MAX_FRAMES,
     det_conf: float = DEFAULT_DET_CONF,
     det_iou: float = DEFAULT_DET_IOU,
+    session_date: Optional[str] = None,
 ) -> dict:
     """Internal: run checkin_video_multi on a local path or stream URI."""
     detector = get_detector()
@@ -460,6 +495,9 @@ def _checkin_video_multi_local(
     # internal vote weight) so the reported number means the same thing as
     # checkin()/checkin_video()'s "confidence": a cosine similarity score.
     track_best: dict = {}
+    # track_id -> list of body crops, capped, used at the end to build each
+    # committed employee's daily ReID fingerprint (see daily_gallery.py).
+    track_crops: dict = {}
     idx = processed = 0
 
     try:
@@ -507,6 +545,10 @@ def _checkin_video_multi_local(
                 if prev is None or confidence > prev[1]:
                     track_best[track_id] = (name, confidence)
 
+                crops_so_far = track_crops.setdefault(track_id, [])
+                if len(crops_so_far) < MAX_DAILY_FINGERPRINT_CROPS:
+                    crops_so_far.append(crop.copy())
+
             idx += 1
             processed += 1
     finally:
@@ -533,9 +575,25 @@ def _checkin_video_multi_local(
         for name, conf in sorted(by_employee.items(), key=lambda kv: -kv[1])
     ]
 
+    # Generate + persist today's body fingerprint for every committed
+    # employee — pool crops across all of that employee's tracks (handles
+    # the "left frame and re-entered" case, same as the by_employee merge
+    # above) so a track that only got a couple of usable crops still
+    # benefits from a same-person track recorded elsewhere in the clip.
+    session_date = session_date or _date.today().isoformat()
+    crops_by_employee: dict = {}
+    for track_id, name in committed_tracks.items():
+        crops_by_employee.setdefault(name, []).extend(track_crops.get(track_id, []))
+    for name, crops in crops_by_employee.items():
+        if not crops:
+            continue
+        vecs = reid_emb.embed_batch(crops)
+        daily_gallery_store.save_fingerprint(session_date, name, vecs)
+
     stats["frames_processed"] = processed
     return {
         "matches": matches,
         "num_tracks": len(committed_tracks),
+        "session_date": session_date,
         **stats,
     }
