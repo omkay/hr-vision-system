@@ -77,9 +77,18 @@ DETECTION_MAX_DIM = 1280
 # zones and confirm labels are stable. This is the single biggest lever on
 # output file size (5x fewer frames written ≈ ~5x smaller before any
 # codec-level compression), on top of the DETECTION_MAX_DIM downscale which
-# already caps the frame resolution itself. The writer's output fps is
-# computed to compensate (see pipeline.py), so playback speed still matches
-# real elapsed time despite the skipped frames.
+# already caps the frame resolution itself.
 DEFAULT_ANNOTATE_STRIDE = 5
+
+# Output frame rate for the annotated debug video. Earlier this was computed
+# to compensate for ANNOTATE_STRIDE (out_fps = (fps/stride)/annotate_stride)
+# so playback duration matched the source clip's real elapsed time — but that
+# meant subsampling only reduced smoothness, not length: a 2-minute clip
+# stayed a ~2-minute annotated video no matter how high annotate_stride was
+# set. Using a fixed fps instead makes duration shrink proportionally with
+# annotate_stride (a genuine time-lapse, faster to skim). Each frame already
+# has its real timestamp burned in (see _annotate_frame in pipeline.py), so
+# nothing is lost — just watched compressed rather than in real time.
+DEFAULT_ANNOTATE_OUTPUT_FPS = 12.0
 
 YOLO_WEIGHTS = str(PROJECT_DIR / "yolov8m.pt")

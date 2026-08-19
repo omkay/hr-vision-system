@@ -13,9 +13,10 @@ import numpy as np
 import pandas as pd
 
 from .config import (
-    DEFAULT_ANNOTATE_STRIDE, DEFAULT_DET_CONF, DEFAULT_DET_IOU,
-    DEFAULT_FACE_THR, DEFAULT_FUSE_WIN, DEFAULT_MAX_FRAMES, DEFAULT_PROX_PX,
-    DEFAULT_REID_THR, DEFAULT_STRIDE, DETECTION_MAX_DIM, OUT_DIR,
+    DEFAULT_ANNOTATE_OUTPUT_FPS, DEFAULT_ANNOTATE_STRIDE, DEFAULT_DET_CONF,
+    DEFAULT_DET_IOU, DEFAULT_FACE_THR, DEFAULT_FUSE_WIN, DEFAULT_MAX_FRAMES,
+    DEFAULT_PROX_PX, DEFAULT_REID_THR, DEFAULT_STRIDE, DETECTION_MAX_DIM,
+    OUT_DIR,
 )
 from . import daily_gallery as daily_gallery_store
 from .events_engine import EventEngine, Zone, load_zones_for_video
@@ -278,10 +279,12 @@ def _run_pipeline_local(
     if write_video:
         annotated_path = OUT_DIR / f"{vp.stem}_annotated.mp4"
         annotate_stride = max(1, annotate_stride)
-        # Compensate for the frame-skip so played-back speed still matches
-        # real elapsed time: each written frame represents annotate_stride
-        # processed-frame-intervals of (fps/stride) seconds each.
-        out_fps = max(1.0, (fps / stride) / annotate_stride)
+        # Fixed output fps (not compensated for annotate_stride) — see
+        # DEFAULT_ANNOTATE_OUTPUT_FPS in config.py for why: this makes
+        # playback duration actually shrink with annotate_stride (a genuine
+        # time-lapse) instead of silently matching the source clip's real
+        # elapsed time no matter how aggressively frames are subsampled.
+        out_fps = DEFAULT_ANNOTATE_OUTPUT_FPS
         writer = cv2.VideoWriter(str(annotated_path),
                                  cv2.VideoWriter_fourcc(*"mp4v"), out_fps, (W, H))
 
