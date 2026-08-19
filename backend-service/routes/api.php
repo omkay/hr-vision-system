@@ -33,6 +33,7 @@ Route::middleware(['filter_input', 'auth:sanctum', 'check.idel', 'authorization:
     Route::post('/process-sequence', [CameraProcessingController::class, 'processSequence']);
     Route::get('/camera/{id}/events', [CameraProcessingController::class, 'events']);
     Route::get('/events', [CameraProcessingController::class, 'allEvents']);
+    Route::get('/vision-jobs', [CameraProcessingController::class, 'index']);
     Route::get('/vision-jobs/{id}', [CameraProcessingController::class, 'jobStatus']);
     Route::get('/reports/summary', [ReportController::class, 'summary']);
 

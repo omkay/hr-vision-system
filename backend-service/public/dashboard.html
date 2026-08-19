@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>لوحة التحكم والتقارير — نيوبارك</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Almarai:wght@400;700;800&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<style>
+  :root {
+    --np-dark-blue: #0054A6;
+    --np-light-blue: #00BFF3;
+    --np-red: #ED1C24;
+    --np-bg: #F8FAFC;
+    --card: #ffffff;
+    --border: #E2E8F0;
+    --text: #1E293B;
+    --muted: #64748B;
+    --ok: #16A34A;
+    --warn: #D97706;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: 'Almarai', sans-serif;
+    background: var(--np-bg);
+    color: var(--text);
+  }
+  .page { padding: 16px 18px 40px; }
+
+  .topbar { margin-bottom: 16px; }
+  .topbar h1 { font-size: 18px; font-weight: 800; color: var(--np-dark-blue); margin: 0; }
+  .topbar .subtitle { color: var(--muted); font-size: 12px; margin-top: 2px; }
+
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 18px 20px; box-shadow: 0 1px 3px rgba(15,23,42,.04); }
+
+  .btn { padding: 9px 16px; border-radius: 8px; border: none; background: var(--np-dark-blue); color: #fff; font-family: inherit; font-size: 13px; font-weight: 700; cursor: pointer; }
+  .btn:hover { background: #00468c; }
+  .btn.ghost { background: #EFF6FF; color: var(--np-dark-blue); }
+  .btn.light { background: var(--np-light-blue); color: #fff; }
+  .conn-warning { display: none; background: #FDECEC; color: var(--np-red); border-radius: 10px; padding: 10px 14px; font-size: 12px; margin-bottom: 14px; }
+  .conn-warning.show { display: block; }
+
+  /* Filters */
+  .filters { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 20px; }
+  .field { display: flex; flex-direction: column; gap: 5px; }
+  .field label { font-size: 11px; color: var(--muted); font-weight: 700; }
+  .field select, .field input { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-family: inherit; font-size: 13px; min-width: 150px; background: #fff; color: var(--text); }
+
+  /* KPI grid */
+  .kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 22px; }
+  @media (max-width: 900px) { .kpi-grid { grid-template-columns: repeat(2, 1fr); } }
+  .kpi { display: flex; align-items: center; gap: 14px; }
+  .kpi .icon { width: 46px; height: 46px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0; }
+  .kpi .icon.blue { background: #E6F0FA; color: var(--np-dark-blue); }
+  .kpi .icon.light { background: #E5F9FF; color: var(--np-light-blue); }
+  .kpi .icon.red { background: #FDECEC; color: var(--np-red); }
+  .kpi .icon.green { background: #E7F8EE; color: var(--ok); }
+  .kpi .value { font-size: 24px; font-weight: 800; color: var(--text); line-height: 1.1; }
+  .kpi .label { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+  .charts-grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; margin-bottom: 16px; }
+  @media (max-width: 980px) { .charts-grid { grid-template-columns: 1fr; } }
+  .card h2 { font-size: 14px; font-weight: 800; color: var(--np-dark-blue); margin: 0 0 14px; }
+  .chart-wrap { position: relative; height: 260px; }
+  .chart-wrap.small { height: 220px; }
+
+  .muted { color: var(--muted); font-size: 12px; }
+  .loading { text-align: center; padding: 30px; color: var(--muted); font-size: 13px; }
+  .empty { text-align: center; padding: 24px; color: var(--muted); font-size: 13px; }
+
+  .section-title { font-size: 15px; font-weight: 800; color: var(--np-dark-blue); margin: 26px 0 12px; }
+
+  table.prod-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.prod-table th, table.prod-table td { text-align: right; padding: 9px 10px; border-bottom: 1px solid var(--border); }
+  table.prod-table th { color: var(--muted); font-weight: 800; font-size: 11px; background: #F8FAFC; }
+  table.prod-table tr:hover td { background: #FAFCFF; }
+  .bar-cell { display: flex; align-items: center; gap: 8px; }
+  .bar-track { flex: 1; height: 8px; border-radius: 999px; background: #EEF2F7; overflow: hidden; min-width: 60px; }
+  .bar-fill { height: 100%; border-radius: 999px; background: var(--np-light-blue); }
+  .prod-pct { font-weight: 800; min-width: 42px; text-align: left; }
+  .prod-pct.good { color: var(--ok); }
+  .prod-pct.mid { color: var(--warn); }
+  .prod-pct.low { color: var(--np-red); }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="topbar">
+    <h1>لوحة التحكم والتقارير</h1>
+    <div class="subtitle">مؤشرات الحضور، تسجيل الدخول، والإنتاجية</div>
+  </div>
+
+  <div class="conn-warning" id="connWarning">تعذر الاتصال بالخادم أو انتهت صلاحية الجلسة — تأكد من تمرير رمز الدخول (token) عبر رابط الصفحة.</div>
+
+  <div class="card filters">
+    <div class="field">
+      <label>من تاريخ</label>
+      <input type="date" id="fDateFrom">
+    </div>
+    <div class="field">
+      <label>إلى تاريخ</label>
+      <input type="date" id="fDateTo">
+    </div>
+    <div class="field">
+      <label>الموظف</label>
+      <select id="fEmployee"><option value="">الكل</option></select>
+    </div>
+    <div class="field">
+      <label>منطقة العمل</label>
+      <select id="fZone"><option value="">الكل</option></select>
+    </div>
+    <div class="field">
+      <button class="btn" onclick="loadAll()">تطبيق الفلاتر</button>
+    </div>
+  </div>
+
+  <div class="kpi-grid" id="kpiGrid">
+    <div class="card kpi"><div class="icon blue">👥</div><div><div class="value" id="kpiEmployees">—</div><div class="label">إجمالي الموظفين</div></div></div>
+    <div class="card kpi"><div class="icon green">✔</div><div><div class="value" id="kpiCheckins">—</div><div class="label">تسجيلات حضور اليوم</div></div></div>
+    <div class="card kpi"><div class="icon light">🗺</div><div><div class="value" id="kpiZones">—</div><div class="label">مناطق العمل النشطة</div></div></div>
+    <div class="card kpi"><div class="icon red">📋</div><div><div class="value" id="kpiEvents">—</div><div class="label">إجمالي الأحداث (ضمن الفلاتر)</div></div></div>
+  </div>
+
+  <div class="charts-grid">
+    <div class="card">
+      <h2>الأحداث حسب اليوم</h2>
+      <div class="chart-wrap"><canvas id="chartByDate"></canvas></div>
+    </div>
+    <div class="card">
+      <h2>توزيع الأحداث حسب المنطقة</h2>
+      <div class="chart-wrap"><canvas id="chartByZone"></canvas></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>أعلى الموظفين نشاطاً (عدد الأحداث)</h2>
+    <div class="chart-wrap small"><canvas id="chartByEmployee"></canvas></div>
+  </div>
+
+  <div class="section-title">مؤشرات الإنتاجية وأنواع الأحداث</div>
+
+  <div class="kpi-grid">
+    <div class="card kpi"><div class="icon green">💼</div><div><div class="value" id="kpiProductivity">—</div><div class="label">نسبة وقت العمل إلى (عمل + هاتف)</div></div></div>
+    <div class="card kpi"><div class="icon red">📱</div><div><div class="value" id="kpiPhoneShare">—</div><div class="label">نسبة استخدام الهاتف من الوقت المرصود</div></div></div>
+    <div class="card kpi"><div class="icon blue">⏱</div><div><div class="value" id="kpiAvgDuration">—</div><div class="label">متوسط مدة الحدث (ثانية)</div></div></div>
+    <div class="card kpi"><div class="icon light">🕒</div><div><div class="value" id="kpiTrackedHours">—</div><div class="label">إجمالي الوقت المرصود (ساعة)</div></div></div>
+  </div>
+
+  <div class="charts-grid">
+    <div class="card">
+      <h2>توزيع الأحداث حسب النوع</h2>
+      <div class="chart-wrap"><canvas id="chartByType"></canvas></div>
+    </div>
+    <div class="card">
+      <h2>الوقت المستغرق حسب نوع الحدث (دقيقة)</h2>
+      <div class="chart-wrap"><canvas id="chartDurationByType"></canvas></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>الإنتاجية حسب الموظف</h2>
+    <div class="muted" style="margin-bottom:10px">
+      النسبة = دقائق العمل ÷ (دقائق العمل + دقائق استخدام الهاتف). تقديرية بحسب الأحداث المرصودة وليست جدولاً زمنياً دقيقاً حصرياً.
+    </div>
+    <div style="overflow-x:auto">
+      <table class="prod-table">
+        <thead>
+          <tr>
+            <th>الموظف</th>
+            <th>عمل (د)</th>
+            <th>هاتف (د)</th>
+            <th>تواجد (د)</th>
+            <th>تفاعلات</th>
+            <th>الإنتاجية</th>
+          </tr>
+        </thead>
+        <tbody id="productivityBody"><tr><td colspan="6" class="loading">جارٍ التحميل…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<script>
+/* ---------------------------------------------------------------------
+   Embedded-page connection layer. This page is meant to be loaded directly
+   into an iframe/webview by a host app (e.g. the Flutter admin app) that
+   already owns the login session — so there is no login form here.
+
+   Config is read from the iframe's own URL query string:
+     dashboard.html?base_url=http://localhost:8080/api&token=xxxxx
+   and cached in localStorage so a reload of the same iframe (without the
+   host re-appending query params) still works. The host re-embeds with a
+   fresh token whenever it changes; this page never tries to obtain one.
+   --------------------------------------------------------------------- */
+const LS_BASE = 'hrvision_baseUrl';
+const LS_TOKEN = 'hrvision_token';
+const qs = new URLSearchParams(location.search);
+
+if (qs.get('base_url')) localStorage.setItem(LS_BASE, qs.get('base_url'));
+if (qs.get('token')) localStorage.setItem(LS_TOKEN, qs.get('token'));
+
+function baseUrl() {
+  return (localStorage.getItem(LS_BASE) || (location.origin + '/api')).replace(/\/$/, '');
+}
+function token() { return localStorage.getItem(LS_TOKEN) || null; }
+
+function showConnWarning(msg) {
+  const el = document.getElementById('connWarning');
+  if (msg) el.textContent = msg;
+  el.classList.add('show');
+}
+
+async function api(path, params = null) {
+  let url = baseUrl() + path;
+  if (params) {
+    const qsx = new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([, v]) => v !== '' && v != null)));
+    const s = qsx.toString();
+    if (s) url += '?' + s;
+  }
+  const headers = { 'Accept': 'application/json' };
+  if (token()) headers['Authorization'] = 'Bearer ' + token();
+  const res = await fetch(url, { headers });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401) showConnWarning();
+  if (!res.ok) throw new Error(data.message || ('HTTP ' + res.status));
+  return data;
+}
+
+/* ---------------------------------------------------------------------
+   Dashboard data + rendering
+   --------------------------------------------------------------------- */
+let charts = {};
+
+function todayStr() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function destroyChart(id) { if (charts[id]) { charts[id].destroy(); delete charts[id]; } }
+
+async function populateFilterOptions() {
+  try {
+    const [emp, zones] = await Promise.all([api('/employees/get'), api('/zone/get')]);
+    const empSel = document.getElementById('fEmployee');
+    (emp.employees || []).forEach(e => {
+      const o = document.createElement('option');
+      o.value = e.id; o.textContent = e.name;
+      empSel.appendChild(o);
+    });
+    const zoneSel = document.getElementById('fZone');
+    (zones.Zone || []).forEach(z => {
+      const o = document.createElement('option');
+      o.value = z.name; o.textContent = z.name;
+      zoneSel.appendChild(o);
+    });
+    document.getElementById('kpiEmployees').textContent = (emp.employees || []).length;
+    document.getElementById('kpiZones').textContent = (zones.Zone || []).length;
+  } catch (e) { console.error(e); }
+}
+
+async function loadKpisAndCheckins() {
+  try {
+    const today = todayStr();
+    const checkins = await api('/checkins', { date: today });
+    document.getElementById('kpiCheckins').textContent = (checkins.checkins || []).length;
+  } catch (e) {
+    document.getElementById('kpiCheckins').textContent = '—';
+  }
+}
+
+function currentFilters() {
+  return {
+    date_from: document.getElementById('fDateFrom').value,
+    date_to: document.getElementById('fDateTo').value,
+    employee_id: document.getElementById('fEmployee').value,
+    zone: document.getElementById('fZone').value,
+  };
+}
+
+async function loadByDateChart(filters) {
+  const res = await api('/reports/summary', { ...filters, group_by: 'date' });
+  const groups = (res.groups || []).slice().sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+  const labels = groups.map(g => g.date);
+  const counts = groups.map(g => g.event_count);
+  document.getElementById('kpiEvents').textContent = counts.reduce((a, b) => a + b, 0);
+
+  destroyChart('byDate');
+  charts.byDate = new Chart(document.getElementById('chartByDate'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: 'عدد الأحداث', data: counts,
+        borderColor: '#0054A6', backgroundColor: 'rgba(0,84,166,.12)',
+        fill: true, tension: .3, pointRadius: 3,
+      }],
+    },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
+      scales: { y: { beginAtZero: true } } },
+  });
+}
+
+async function loadByZoneChart(filters) {
+  const res = await api('/reports/summary', { ...filters, group_by: 'zone' });
+  const groups = res.groups || [];
+  const labels = groups.map(g => g.zone || 'غير محدد');
+  const counts = groups.map(g => g.event_count);
+  const palette = ['#0054A6', '#00BFF3', '#ED1C24', '#16A34A', '#D97706', '#7C3AED', '#0891B2', '#DB2777'];
+
+  destroyChart('byZone');
+  charts.byZone = new Chart(document.getElementById('chartByZone'), {
+    type: 'doughnut',
+    data: { labels, datasets: [{ data: counts, backgroundColor: labels.map((_, i) => palette[i % palette.length]) }] },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { font: { family: 'Almarai' } } } } },
+  });
+}
+
+async function loadByEmployeeChart(filters) {
+  const res = await api('/reports/summary', { ...filters, group_by: 'employee' });
+  const groups = (res.groups || []).slice().sort((a, b) => b.event_count - a.event_count).slice(0, 8);
+  const labels = groups.map(g => g.employee_name || ('#' + g.employee_id));
+  const counts = groups.map(g => g.event_count);
+
+  destroyChart('byEmployee');
+  charts.byEmployee = new Chart(document.getElementById('chartByEmployee'), {
+    type: 'bar',
+    data: { labels, datasets: [{ label: 'عدد الأحداث', data: counts, backgroundColor: '#00BFF3', borderRadius: 6 }] },
+    options: {
+      indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: { x: { beginAtZero: true } },
+    },
+  });
+}
+
+const EVENT_TYPE_LABEL = {
+  presence: 'تواجد', working: 'عمل', phone_use: 'استخدام هاتف',
+  interaction: 'تفاعل', checkin: 'تسجيل حضور',
+};
+const TYPE_PALETTE = { presence: '#0054A6', working: '#16A34A', phone_use: '#ED1C24', interaction: '#7C3AED', checkin: '#00BFF3' };
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function productivityClass(pct) {
+  if (pct >= 70) return 'good';
+  if (pct >= 40) return 'mid';
+  return 'low';
+}
+
+async function loadEventTypeAndProductivity(filters) {
+  // /events (not /reports/summary) is used here because event_type isn't
+  // a valid group_by dimension on the reports endpoint — raw events give
+  // per-record event_type + duration_s to aggregate client-side instead.
+  const res = await api('/events', {
+    date_from: filters.date_from, date_to: filters.date_to,
+    employee_id: filters.employee_id, zone: filters.zone,
+  });
+  const events = res.events || [];
+
+  const typeCounts = {};
+  const typeDurationS = {};
+  let totalDurationS = 0;
+  const perEmployee = {};
+
+  events.forEach(e => {
+    const t = e.event_type || 'presence';
+    const dur = Number(e.duration_s) || 0;
+    typeCounts[t] = (typeCounts[t] || 0) + 1;
+    typeDurationS[t] = (typeDurationS[t] || 0) + dur;
+    totalDurationS += dur;
+
+    const key = e.employee_id != null ? String(e.employee_id) : 'unknown';
+    if (!perEmployee[key]) {
+      perEmployee[key] = { name: e.employee_name || 'غير معروف', working: 0, phone: 0, presence: 0, interaction: 0 };
+    }
+    const bucket = perEmployee[key];
+    if (t === 'working') bucket.working += dur;
+    else if (t === 'phone_use') bucket.phone += dur;
+    else if (t === 'presence') bucket.presence += dur;
+    else if (t === 'interaction') bucket.interaction += 1;
+  });
+
+  // KPIs
+  const workingS = typeDurationS.working || 0;
+  const phoneS = typeDurationS.phone_use || 0;
+  const productivityPct = (workingS + phoneS) > 0 ? Math.round((workingS / (workingS + phoneS)) * 100) : 0;
+  const phoneSharePct = totalDurationS > 0 ? Math.round((phoneS / totalDurationS) * 100) : 0;
+  const avgDuration = events.length ? (totalDurationS / events.length) : 0;
+
+  document.getElementById('kpiProductivity').textContent = (workingS + phoneS) > 0 ? productivityPct + '%' : '—';
+  document.getElementById('kpiPhoneShare').textContent = totalDurationS > 0 ? phoneSharePct + '%' : '—';
+  document.getElementById('kpiAvgDuration').textContent = events.length ? avgDuration.toFixed(1) : '—';
+  document.getElementById('kpiTrackedHours').textContent = (totalDurationS / 3600).toFixed(1);
+
+  // Event-type charts
+  const typeKeys = Object.keys(typeCounts);
+  destroyChart('byType');
+  charts.byType = new Chart(document.getElementById('chartByType'), {
+    type: 'doughnut',
+    data: {
+      labels: typeKeys.map(k => EVENT_TYPE_LABEL[k] || k),
+      datasets: [{ data: typeKeys.map(k => typeCounts[k]), backgroundColor: typeKeys.map(k => TYPE_PALETTE[k] || '#94A3B8') }],
+    },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { font: { family: 'Almarai' } } } } },
+  });
+
+  destroyChart('durationByType');
+  charts.durationByType = new Chart(document.getElementById('chartDurationByType'), {
+    type: 'bar',
+    data: {
+      labels: typeKeys.map(k => EVENT_TYPE_LABEL[k] || k),
+      datasets: [{ data: typeKeys.map(k => Math.round((typeDurationS[k] || 0) / 60)), backgroundColor: typeKeys.map(k => TYPE_PALETTE[k] || '#94A3B8'), borderRadius: 6 }],
+    },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } },
+  });
+
+  // Per-employee productivity table
+  const rows = Object.values(perEmployee)
+    .map(r => {
+      const workingMin = r.working / 60, phoneMin = r.phone / 60, presenceMin = r.presence / 60;
+      const pct = (r.working + r.phone) > 0 ? Math.round((r.working / (r.working + r.phone)) * 100) : null;
+      return { ...r, workingMin, phoneMin, presenceMin, pct };
+    })
+    .sort((a, b) => b.workingMin - a.workingMin);
+
+  const tbody = document.getElementById('productivityBody');
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty">لا توجد بيانات ضمن الفلاتر الحالية</td></tr>';
+  } else {
+    tbody.innerHTML = rows.map(r => `
+      <tr>
+        <td>${esc(r.name)}</td>
+        <td>${r.workingMin.toFixed(1)}</td>
+        <td>${r.phoneMin.toFixed(1)}</td>
+        <td>${r.presenceMin.toFixed(1)}</td>
+        <td>${r.interaction}</td>
+        <td>
+          ${r.pct == null ? '<span class="muted">—</span>' : `
+            <div class="bar-cell">
+              <span class="prod-pct ${productivityClass(r.pct)}">${r.pct}%</span>
+              <div class="bar-track"><div class="bar-fill" style="width:${r.pct}%"></div></div>
+            </div>`}
+        </td>
+      </tr>`).join('');
+  }
+}
+
+async function loadAll() {
+  const filters = currentFilters();
+  await Promise.all([
+    loadKpisAndCheckins(),
+    loadByDateChart(filters),
+    loadByZoneChart(filters),
+    loadByEmployeeChart(filters),
+    loadEventTypeAndProductivity(filters),
+  ]).catch(e => console.error(e));
+}
+
+(async function init() {
+  Chart.defaults.font.family = 'Almarai';
+  document.getElementById('fDateTo').value = todayStr();
+  if (!token()) showConnWarning('لا يوجد رمز دخول — مرر ?token=... عند تضمين هذه الصفحة.');
+  await populateFilterOptions();
+  await loadAll();
+})();
+</script>
+</body>
+</html>

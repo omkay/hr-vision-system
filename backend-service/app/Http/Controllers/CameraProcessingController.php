@@ -203,11 +203,26 @@ class CameraProcessingController extends Controller
     {
         $job = VisionJob::with('cameras:id,name')->findOrFail($id);
 
-        // annotated_videos (per-camera debug videos with boxes/zones drawn
-        // in — only present if write_video was requested) only survive
-        // inside the raw_result JSON blob PollVisionEventsJob stores once
-        // the job is done; extract + resolve them to browser-fetchable URLs
-        // here rather than making every caller do that decoding themselves.
+        return response()->json([
+            'id' => $job->id,
+            'vision_job_id' => $job->vision_job_id,
+            'status' => $job->status,
+            'error_message' => $job->error_message,
+            'finished_at' => $job->finished_at,
+            'cameras' => $job->cameras->pluck('name'),
+            'annotated_videos' => $this->decodeAnnotatedVideos($job),
+        ]);
+    }
+
+    /**
+     * annotated_videos (per-camera debug videos with boxes/zones drawn in —
+     * only present if write_video was requested) only survive inside the
+     * raw_result JSON blob PollVisionEventsJob stores once the job is done;
+     * extract + resolve them to browser-fetchable URLs here rather than
+     * making every caller (jobStatus, index) do that decoding themselves.
+     */
+    private function decodeAnnotatedVideos(VisionJob $job): array
+    {
         $annotatedVideos = [];
         if ($job->raw_result) {
             $result = json_decode($job->raw_result, true) ?? [];
@@ -223,14 +238,64 @@ class CameraProcessingController extends Controller
             }
         }
 
+        return $annotatedVideos;
+    }
+
+    #[OA\Get(
+        path: '/vision-jobs',
+        summary: 'List past processing jobs (with their annotated videos), newest first',
+        description: 'Paginated list of vision jobs, optionally filtered by camera/status/date — '
+            . 'used to build a video-review page without needing to already know a job id.',
+        tags: ['Processing'],
+        security: [['bearerAuth' => []]],
+        parameters: [
+            new OA\Parameter(name: 'camera_id', in: 'query', required: false, description: 'Only jobs that include this camera.', schema: new OA\Schema(type: 'integer')),
+            new OA\Parameter(name: 'status', in: 'query', required: false, schema: new OA\Schema(type: 'string', enum: ['queued', 'running', 'done', 'error'])),
+            new OA\Parameter(name: 'date_from', in: 'query', required: false, schema: new OA\Schema(type: 'string', format: 'date')),
+            new OA\Parameter(name: 'date_to', in: 'query', required: false, schema: new OA\Schema(type: 'string', format: 'date')),
+            new OA\Parameter(name: 'per_page', in: 'query', required: false, schema: new OA\Schema(type: 'integer', default: 15)),
+            new OA\Parameter(name: 'page', in: 'query', required: false, schema: new OA\Schema(type: 'integer', default: 1)),
+        ],
+        responses: [new OA\Response(response: 200, description: 'Paginated jobs, each with resolved annotated_videos.')],
+    )]
+    public function index(Request $request)
+    {
+        $query = VisionJob::with('cameras:id,name')->latest();
+
+        if ($request->filled('camera_id')) {
+            $query->whereHas('cameras', fn ($q) => $q->where('cameras.id', $request->camera_id));
+        }
+
+        if ($request->filled('status')) {
+            $query->where('status', $request->status);
+        }
+
+        if ($request->filled('date_from')) {
+            $query->whereDate('created_at', '>=', $request->date_from);
+        }
+
+        if ($request->filled('date_to')) {
+            $query->whereDate('created_at', '<=', $request->date_to);
+        }
+
+        $perPage = (int) $request->input('per_page', 15);
+        $jobs = $query->paginate($perPage > 0 ? $perPage : 15);
+
         return response()->json([
-            'id' => $job->id,
-            'vision_job_id' => $job->vision_job_id,
-            'status' => $job->status,
-            'error_message' => $job->error_message,
-            'finished_at' => $job->finished_at,
-            'cameras' => $job->cameras->pluck('name'),
-            'annotated_videos' => $annotatedVideos,
+            'message' => 'سجل المهام',
+            'current_page' => $jobs->currentPage(),
+            'last_page' => $jobs->lastPage(),
+            'total' => $jobs->total(),
+            'jobs' => collect($jobs->items())->map(fn (VisionJob $job) => [
+                'id' => $job->id,
+                'vision_job_id' => $job->vision_job_id,
+                'status' => $job->status,
+                'error_message' => $job->error_message,
+                'created_at' => $job->created_at,
+                'finished_at' => $job->finished_at,
+                'cameras' => $job->cameras->pluck('name'),
+                'annotated_videos' => $this->decodeAnnotatedVideos($job),
+            ]),
         ]);
     }
 
@@ -410,7 +475,9 @@ class CameraProcessingController extends Controller
             new OA\Parameter(name: 'employee_id', in: 'query', required: false, schema: new OA\Schema(type: 'integer')),
             new OA\Parameter(name: 'event_type', in: 'query', required: false, schema: new OA\Schema(type: 'string', enum: ['presence', 'working', 'phone_use', 'interaction', 'checkin'])),
             new OA\Parameter(name: 'zone', in: 'query', required: false, schema: new OA\Schema(type: 'string')),
-            new OA\Parameter(name: 'date', in: 'query', required: false, schema: new OA\Schema(type: 'string', format: 'date')),
+            new OA\Parameter(name: 'date', in: 'query', required: false, description: 'Exact day. Ignored if date_from/date_to are given.', schema: new OA\Schema(type: 'string', format: 'date')),
+            new OA\Parameter(name: 'date_from', in: 'query', required: false, description: 'Range start (inclusive). Lets callers (e.g. the dashboard) aggregate over more than one day.', schema: new OA\Schema(type: 'string', format: 'date')),
+            new OA\Parameter(name: 'date_to', in: 'query', required: false, description: 'Range end (inclusive).', schema: new OA\Schema(type: 'string', format: 'date')),
             new OA\Parameter(name: 'order', in: 'query', required: false, description: "'asc' for chronological (a per-employee 'chain of events'), 'desc' (default) for newest first.", schema: new OA\Schema(type: 'string', enum: ['asc', 'desc'])),
         ],
         responses: [new OA\Response(response: 200, description: 'Matching activity events across all cameras.')],
@@ -435,7 +502,19 @@ class CameraProcessingController extends Controller
             $query->where('zone', $request->zone);
         }
 
-        if ($request->filled('date')) {
+        // date_from/date_to (a range) take precedence over the older single
+        // `date` param — added so callers that need to aggregate over more
+        // than one day (e.g. the dashboard's productivity charts) don't have
+        // to issue one request per day. `date` alone still works exactly as
+        // before for anyone not passing a range.
+        if ($request->filled('date_from') || $request->filled('date_to')) {
+            if ($request->filled('date_from')) {
+                $query->whereDate('created_at', '>=', $request->date_from);
+            }
+            if ($request->filled('date_to')) {
+                $query->whereDate('created_at', '<=', $request->date_to);
+            }
+        } elseif ($request->filled('date')) {
             $query->whereDate('created_at', $request->date);
         }
 

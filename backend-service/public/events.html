@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>سجل الأحداث — نيوبارك</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Almarai:wght@400;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --np-dark-blue: #0054A6;
+    --np-light-blue: #00BFF3;
+    --np-red: #ED1C24;
+    --np-bg: #F8FAFC;
+    --card: #ffffff;
+    --border: #E2E8F0;
+    --text: #1E293B;
+    --muted: #64748B;
+    --ok: #16A34A;
+    --warn: #D97706;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: 'Almarai', sans-serif; background: var(--np-bg); color: var(--text); }
+  .page { padding: 16px 18px 40px; }
+
+  .topbar { margin-bottom: 16px; }
+  .topbar h1 { font-size: 18px; font-weight: 800; color: var(--np-dark-blue); margin: 0; }
+  .topbar .subtitle { color: var(--muted); font-size: 12px; margin-top: 2px; }
+
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 18px 20px; box-shadow: 0 1px 3px rgba(15,23,42,.04); margin-bottom: 18px; }
+  .card h2 { font-size: 14px; font-weight: 800; color: var(--np-dark-blue); margin: 0 0 14px; display: flex; justify-content: space-between; align-items: center; }
+  .card h2 .count { color: var(--muted); font-weight: 700; font-size: 12px; }
+
+  .btn { padding: 9px 16px; border-radius: 8px; border: none; background: var(--np-dark-blue); color: #fff; font-family: inherit; font-size: 13px; font-weight: 700; cursor: pointer; }
+  .btn:hover { background: #00468c; }
+  .conn-warning { display: none; background: #FDECEC; color: var(--np-red); border-radius: 10px; padding: 10px 14px; font-size: 12px; margin-bottom: 14px; }
+  .conn-warning.show { display: block; }
+
+  .filters { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+  .field { display: flex; flex-direction: column; gap: 5px; }
+  .field label { font-size: 11px; color: var(--muted); font-weight: 700; }
+  .field select, .field input { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-family: inherit; font-size: 13px; min-width: 145px; background: #fff; color: var(--text); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: right; padding: 9px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 800; font-size: 11px; background: #F8FAFC; position: sticky; top: 0; }
+  tr:hover td { background: #FAFCFF; }
+  .table-wrap { overflow-x: auto; max-height: 620px; overflow-y: auto; border-radius: 10px; border: 1px solid var(--border); }
+
+  .pill { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+  .pill.presence { background: #E6F0FA; color: var(--np-dark-blue); }
+  .pill.working { background: #E7F8EE; color: var(--ok); }
+  .pill.phone_use { background: #FFF7E6; color: var(--warn); }
+  .pill.interaction { background: #F3E8FF; color: #7C3AED; }
+  .pill.checkin { background: #E5F9FF; color: #0891B2; }
+  .unknown { color: var(--np-red); font-weight: 700; }
+
+  .empty, .loading { text-align: center; padding: 30px; color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="topbar">
+    <h1>سجل الأحداث</h1>
+    <div class="subtitle">تصفية جميع الأحداث المرصودة حسب المنطقة والنوع والموظف والكاميرا</div>
+  </div>
+
+  <div class="conn-warning" id="connWarning">تعذر الاتصال بالخادم أو انتهت صلاحية الجلسة — تأكد من تمرير رمز الدخول (token) عبر رابط الصفحة.</div>
+
+  <div class="card filters">
+    <div class="field">
+      <label>الكاميرا</label>
+      <select id="fCamera"><option value="">الكل</option></select>
+    </div>
+    <div class="field">
+      <label>الموظف</label>
+      <select id="fEmployee"><option value="">الكل</option></select>
+    </div>
+    <div class="field">
+      <label>نوع الحدث</label>
+      <select id="fEventType">
+        <option value="">الكل</option>
+        <option value="presence">تواجد</option>
+        <option value="working">عمل</option>
+        <option value="phone_use">استخدام هاتف</option>
+        <option value="interaction">تفاعل</option>
+        <option value="checkin">تسجيل حضور</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>منطقة العمل</label>
+      <select id="fZone"><option value="">الكل</option></select>
+    </div>
+    <div class="field">
+      <label>التاريخ</label>
+      <input type="date" id="fDate">
+    </div>
+    <div class="field">
+      <label>الترتيب</label>
+      <select id="fOrder">
+        <option value="desc">الأحدث أولاً</option>
+        <option value="asc">الأقدم أولاً</option>
+      </select>
+    </div>
+    <div class="field">
+      <button class="btn" onclick="loadEvents()">تطبيق الفلاتر</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>الأحداث <span class="count" id="eventCount"></span></h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>الموظف</th>
+            <th>الرقم الوظيفي</th>
+            <th>الكاميرا</th>
+            <th>المنطقة</th>
+            <th>نوع الحدث</th>
+            <th>التفاصيل</th>
+            <th>البداية (ث)</th>
+            <th>النهاية (ث)</th>
+            <th>المدة (ث)</th>
+            <th>الثقة</th>
+            <th>الطريقة</th>
+            <th>وقت الرصد</th>
+          </tr>
+        </thead>
+        <tbody id="eventsBody"><tr><td colspan="12" class="loading">جارٍ التحميل…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<script>
+/* ---------------------------------------------------------------------
+   Embedded-page connection layer — see dashboard.html for the full
+   rationale. No login form: config comes from the iframe's own URL query
+   string (?base_url=...&token=...), cached in localStorage for reload.
+   --------------------------------------------------------------------- */
+const LS_BASE = 'hrvision_baseUrl';
+const LS_TOKEN = 'hrvision_token';
+const qsInit = new URLSearchParams(location.search);
+
+if (qsInit.get('base_url')) localStorage.setItem(LS_BASE, qsInit.get('base_url'));
+if (qsInit.get('token')) localStorage.setItem(LS_TOKEN, qsInit.get('token'));
+
+function baseUrl() { return (localStorage.getItem(LS_BASE) || (location.origin + '/api')).replace(/\/$/, ''); }
+function token() { return localStorage.getItem(LS_TOKEN) || null; }
+
+function showConnWarning(msg) {
+  const el = document.getElementById('connWarning');
+  if (msg) el.textContent = msg;
+  el.classList.add('show');
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+async function api(path, params = null) {
+  let url = baseUrl() + path;
+  if (params) {
+    const qs = new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([, v]) => v !== '' && v != null)));
+    const s = qs.toString();
+    if (s) url += '?' + s;
+  }
+  const headers = { 'Accept': 'application/json' };
+  if (token()) headers['Authorization'] = 'Bearer ' + token();
+  const res = await fetch(url, { headers });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401) showConnWarning();
+  if (!res.ok) throw new Error(data.message || ('HTTP ' + res.status));
+  return data;
+}
+
+const EVENT_TYPE_LABEL = {
+  presence: 'تواجد', working: 'عمل', phone_use: 'استخدام هاتف',
+  interaction: 'تفاعل', checkin: 'تسجيل حضور',
+};
+
+async function loadFilterOptions() {
+  try {
+    const [cams, emp, zones] = await Promise.all([api('/camera/get'), api('/employees/get'), api('/zone/get')]);
+    const camSel = document.getElementById('fCamera');
+    (cams.cameras || []).forEach(c => {
+      const o = document.createElement('option'); o.value = c.id; o.textContent = c.name; camSel.appendChild(o);
+    });
+    const empSel = document.getElementById('fEmployee');
+    (emp.employees || []).forEach(e => {
+      const o = document.createElement('option'); o.value = e.id; o.textContent = e.name; empSel.appendChild(o);
+    });
+    const zoneSel = document.getElementById('fZone');
+    (zones.Zone || []).forEach(z => {
+      const o = document.createElement('option'); o.value = z.name; o.textContent = z.name; zoneSel.appendChild(o);
+    });
+  } catch (e) { console.error(e); }
+}
+
+function fmtDetails(e) {
+  if (e.event_type === 'working' && e.work_proxy) return esc(e.work_proxy);
+  if (e.event_type === 'interaction' && e.peers) return esc((e.peers || []).join(' + '));
+  if (e.zone_type) return esc(e.zone_type === 'work_area' ? 'منطقة عمل' : 'منطقة عامة');
+  return '—';
+}
+
+function renderEvents(data) {
+  const tbody = document.getElementById('eventsBody');
+  const events = data.events || [];
+  document.getElementById('eventCount').textContent = `(${data.event_count ?? events.length})`;
+
+  if (!events.length) {
+    tbody.innerHTML = '<tr><td colspan="12" class="empty">لا توجد أحداث مطابقة للفلاتر الحالية</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = events.map(e => `
+    <tr>
+      <td>${e.employee_id ? esc(e.employee_name || ('#' + e.employee_id)) : '<span class="unknown">غير معروف</span>'}</td>
+      <td>${esc(e.job_num ?? '—')}</td>
+      <td>${esc(e.camera_name ?? '—')}</td>
+      <td>${esc(e.zone ?? '—')}</td>
+      <td><span class="pill ${esc(e.event_type)}">${esc(EVENT_TYPE_LABEL[e.event_type] || e.event_type)}</span></td>
+      <td>${fmtDetails(e)}</td>
+      <td>${e.start_s != null ? Number(e.start_s).toFixed(1) : '—'}</td>
+      <td>${e.end_s != null ? Number(e.end_s).toFixed(1) : '—'}</td>
+      <td>${e.duration_s != null ? Number(e.duration_s).toFixed(1) : '—'}</td>
+      <td>${e.confidence != null ? Number(e.confidence).toFixed(2) : '—'}</td>
+      <td>${esc(e.method ?? '—')}</td>
+      <td>${e.created_at ? new Date(e.created_at).toLocaleString('ar-EG') : '—'}</td>
+    </tr>`).join('');
+}
+
+async function loadEvents() {
+  const tbody = document.getElementById('eventsBody');
+  tbody.innerHTML = '<tr><td colspan="12" class="loading">جارٍ التحميل…</td></tr>';
+  try {
+    const data = await api('/events', {
+      camera_id: document.getElementById('fCamera').value,
+      employee_id: document.getElementById('fEmployee').value,
+      event_type: document.getElementById('fEventType').value,
+      zone: document.getElementById('fZone').value,
+      date: document.getElementById('fDate').value,
+      order: document.getElementById('fOrder').value,
+    });
+    renderEvents(data);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="12" class="empty">تعذر تحميل الأحداث: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+(async function init() {
+  if (!token()) showConnWarning('لا يوجد رمز دخول — مرر ?token=... عند تضمين هذه الصفحة.');
+  await loadFilterOptions();
+  await loadEvents();
+})();
+</script>
+</body>
+</html>
