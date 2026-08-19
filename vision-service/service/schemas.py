@@ -165,12 +165,26 @@ class EventRecord(BaseModel):
     )
 
 
+class AnnotatedVideoRef(BaseModel):
+    """One annotated debug video, mapped back to the camera it came from."""
+    camera_id: str = Field(..., description="Camera label this video was generated from — matches `camera_ids` in the request.")
+    path: str = Field(
+        ...,
+        description=(
+            "Path under this service's `/outputs` static route, e.g. `/outputs/foo_annotated.mp4`. "
+            "Fetch it at `<this service's base URL><path>` — callers behind another layer "
+            "(e.g. Hr_SmartPay) should prefix with whatever base URL reaches this service from "
+            "a browser, which may differ from the URL they use for server-to-server calls."
+        ),
+    )
+
+
 class JobResultPayload(BaseModel):
     events: List[EventRecord]
     event_count: int = Field(..., description="Total number of events returned.")
-    annotated_videos: List[str] = Field(
+    annotated_videos: List[AnnotatedVideoRef] = Field(
         default_factory=list,
-        description="Server-side paths to annotated MP4s (only populated when `write_video=true`).",
+        description="One entry per camera with bounding boxes/zones/labels drawn in — only populated when `write_video=true`.",
     )
 
 

@@ -1,6 +1,8 @@
 """Reusable pipeline runner — detection → tracking → identity → events."""
 from __future__ import annotations
 
+import logging
+import subprocess
 from collections import Counter
 from datetime import date as _date
 from pathlib import Path
@@ -11,9 +13,9 @@ import numpy as np
 import pandas as pd
 
 from .config import (
-    DEFAULT_DET_CONF, DEFAULT_DET_IOU, DEFAULT_FACE_THR, DEFAULT_FUSE_WIN,
-    DEFAULT_MAX_FRAMES, DEFAULT_PROX_PX, DEFAULT_REID_THR, DEFAULT_STRIDE,
-    DETECTION_MAX_DIM, OUT_DIR,
+    DEFAULT_ANNOTATE_STRIDE, DEFAULT_DET_CONF, DEFAULT_DET_IOU,
+    DEFAULT_FACE_THR, DEFAULT_FUSE_WIN, DEFAULT_MAX_FRAMES, DEFAULT_PROX_PX,
+    DEFAULT_REID_THR, DEFAULT_STRIDE, DETECTION_MAX_DIM, OUT_DIR,
 )
 from . import daily_gallery as daily_gallery_store
 from .events_engine import EventEngine, Zone, load_zones_for_video
@@ -22,6 +24,139 @@ from .gallery import EmployeeGallery
 from .identity import IdentityFuser, UNKNOWN_LABEL
 from .models import get_detector, get_face_embedder, get_reid_embedder
 from .storage import resolve_source
+
+log = logging.getLogger(__name__)
+
+# ── Annotated-video drawing ──────────────────────────────────────────────────
+# Colors are BGR (OpenCV convention), chosen to be distinguishable from each
+# other and from typical office-footage backgrounds.
+_COLOR_KNOWN = (60, 200, 60)      # green — identified employee
+_COLOR_UNKNOWN = (140, 140, 140)  # gray — UNKNOWN / uncommitted track
+_COLOR_PHONE = (0, 200, 255)
+_COLOR_LAPTOP = (255, 200, 0)
+_COLOR_MONITOR = (255, 120, 0)
+_COLOR_ZONE = (255, 150, 0)
+
+
+def _draw_box(frame, bbox, color, label=None, thickness=2):
+    x1, y1, x2, y2 = [int(v) for v in bbox]
+    cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
+    if label:
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+        ty = max(th + 4, y1)
+        cv2.rectangle(frame, (x1, ty - th - 6), (x1 + tw + 6, ty), color, -1)
+        cv2.putText(frame, label, (x1 + 3, ty - 3), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5, (0, 0, 0), 1, cv2.LINE_AA)
+
+
+def _draw_zones(frame, zones):
+    """Draw each zone's polygon boundary + label — lets a reviewer see the
+    exact region presence/working/interaction events are being tested
+    against, not just the raw detections."""
+    for z in zones:
+        try:
+            coords = list(z.polygon.exterior.coords)
+        except Exception:
+            continue
+        pts = np.array(coords, dtype=np.int32).reshape(-1, 1, 2)
+        cv2.polylines(frame, [pts], isClosed=True, color=_COLOR_ZONE,
+                      thickness=1, lineType=cv2.LINE_AA)
+        x0, y0 = pts[0][0]
+        cv2.putText(frame, z.name, (int(x0) + 4, int(y0) + 16),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, _COLOR_ZONE, 1, cv2.LINE_AA)
+
+
+def _annotate_frame(frame, people, phones, laptops, monitors, zones, ts_s):
+    """Draw zones, person boxes (colored/labeled by resolved identity), and
+    object boxes directly onto *frame* in place, plus a timestamp so a
+    reviewer can cross-reference against event start_s/end_s. This is the
+    only place bounding boxes actually get drawn — the pipeline previously
+    named its output "annotated_videos" without ever drawing anything."""
+    _draw_zones(frame, zones)
+    for p in people:
+        known = p["employee_id"] != UNKNOWN_LABEL
+        color = _COLOR_KNOWN if known else _COLOR_UNKNOWN
+        _draw_box(frame, p["bbox"], color, f'{p["employee_id"]} #{p["track_id"]}')
+    for dets, color, name in (
+        (phones, _COLOR_PHONE, "phone"),
+        (laptops, _COLOR_LAPTOP, "laptop"),
+        (monitors, _COLOR_MONITOR, "monitor"),
+    ):
+        for d in dets:
+            _draw_box(frame, d["bbox"], color, name)
+    cv2.putText(frame, f"t={ts_s:.1f}s", (8, frame.shape[0] - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+    return frame
+
+
+def _bbox_center(bbox):
+    x1, y1, x2, y2 = bbox
+    return (x1 + x2) / 2.0, (y1 + y2) / 2.0
+
+
+# Spatiotemporal track re-linking — see IdentityFuser.adopt() for the
+# rationale. A brand-new track_id appearing within this many seconds, and
+# this close (pixels, in the already-downscaled coordinate space), to where
+# a committed identity's track was last seen is presumed to be the same
+# physical person continuing on (ByteTrack lost them, most often because
+# their visible appearance changed — e.g. removing a jacket — right as
+# same-day ReID would otherwise need to re-recognize that new appearance
+# and may not be able to).
+RELINK_MAX_GAP_S = 2.0
+RELINK_MAX_DIST_PX = 200
+
+
+def _find_relink_candidate(new_bbox, processed_idx, fps, track_last_seen, committed):
+    """Find a recently-vacated committed track near *new_bbox*, if any.
+
+    This is a heuristic, not authoritative — in a crowded scene two
+    different people could plausibly swap positions within the gap/distance
+    window, mis-linking one to the other's identity. The short default gap
+    (2s) and tight distance keep that risk low without disabling the whole
+    thing for everyone; retune RELINK_MAX_GAP_S/RELINK_MAX_DIST_PX if a
+    particular camera's footage misbehaves.
+    """
+    max_gap_frames = RELINK_MAX_GAP_S * fps
+    nx, ny = _bbox_center(new_bbox)
+    best_name, best_dist = None, RELINK_MAX_DIST_PX
+    for tid, name in committed.items():
+        seen = track_last_seen.get(tid)
+        if seen is None:
+            continue
+        last_frame, last_bbox = seen
+        gap = processed_idx - last_frame
+        if gap <= 0 or gap > max_gap_frames:
+            continue
+        lx, ly = _bbox_center(last_bbox)
+        dist = ((nx - lx) ** 2 + (ny - ly) ** 2) ** 0.5
+        if dist < best_dist:
+            best_dist = dist
+            best_name = name
+    return best_name
+
+
+def _compress_video(path: Path) -> Path:
+    """Re-encode *path* in place via ffmpeg (H.264, CRF 26) — cv2.VideoWriter's
+    mp4v codec is far less efficient than a real encoder for the same visual
+    quality, and this is on top of the frame-skip (DEFAULT_ANNOTATE_STRIDE)
+    and resolution cap (DETECTION_MAX_DIM) already applied upstream. Falls
+    back to leaving the raw mp4v file in place if ffmpeg isn't installed or
+    the re-encode fails — a bigger-but-playable file beats no file.
+    """
+    compressed = path.with_name(path.stem + "_x264.mp4")
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(path), "-vcodec", "libx264",
+             "-crf", "26", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+             str(compressed)],
+            check=True, capture_output=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+        log.warning("ffmpeg re-encode failed (%s) — keeping raw mp4v output for %s", e, path)
+        return path
+    path.unlink(missing_ok=True)
+    compressed.rename(path)
+    return path
 
 # Cap on how many body crops we keep per track while scanning a checkin
 # video, purely to bound memory/CPU for the end-of-run ReID embedding batch
@@ -56,6 +191,7 @@ def run_pipeline(
     max_frames: int = DEFAULT_MAX_FRAMES,
     prox_px: int = DEFAULT_PROX_PX,
     write_video: bool = False,
+    annotate_stride: int = DEFAULT_ANNOTATE_STRIDE,
     progress: Optional[Callable[[int, int], None]] = None,
     session_date: Optional[str] = None,
 ) -> Tuple[pd.DataFrame, Optional[Path]]:
@@ -67,6 +203,11 @@ def run_pipeline(
     fingerprints for the employees expected in this footage. Defaults to
     today if omitted. Has no effect if no fingerprints exist yet for that
     date (falls straight through to the static enrollment gallery).
+
+    annotate_stride: only relevant when write_video=True — write 1 out of
+    every N *processed* frames to the output, to keep the annotated video
+    reviewable-by-eye without ballooning file size. See config.py's
+    DEFAULT_ANNOTATE_STRIDE for the reasoning.
     """
     with resolve_source(video_path) as local_path:
         return _run_pipeline_local(
@@ -76,8 +217,8 @@ def run_pipeline(
             face_thr=face_thr, reid_thr=reid_thr,
             fuse_win=fuse_win, stride=stride,
             max_frames=max_frames, prox_px=prox_px,
-            write_video=write_video, progress=progress,
-            session_date=session_date,
+            write_video=write_video, annotate_stride=annotate_stride,
+            progress=progress, session_date=session_date,
         )
 
 
@@ -96,6 +237,7 @@ def _run_pipeline_local(
     max_frames: int = DEFAULT_MAX_FRAMES,
     prox_px: int = DEFAULT_PROX_PX,
     write_video: bool = False,
+    annotate_stride: int = DEFAULT_ANNOTATE_STRIDE,
     progress: Optional[Callable[[int, int], None]] = None,
     session_date: Optional[str] = None,
 ) -> Tuple[pd.DataFrame, Optional[Path]]:
@@ -135,8 +277,13 @@ def _run_pipeline_local(
     writer = None
     if write_video:
         annotated_path = OUT_DIR / f"{vp.stem}_annotated.mp4"
+        annotate_stride = max(1, annotate_stride)
+        # Compensate for the frame-skip so played-back speed still matches
+        # real elapsed time: each written frame represents annotate_stride
+        # processed-frame-intervals of (fps/stride) seconds each.
+        out_fps = max(1.0, (fps / stride) / annotate_stride)
         writer = cv2.VideoWriter(str(annotated_path),
-                                 cv2.VideoWriter_fourcc(*"mp4v"), 15, (W, H))
+                                 cv2.VideoWriter_fourcc(*"mp4v"), out_fps, (W, H))
 
     if zones:
         # Resolve ZoneDefinition objects → Zone objects.
@@ -159,6 +306,9 @@ def _run_pipeline_local(
     engine = EventEngine(fps=fps / stride, zones=active_zones, proximity_px=prox_px)
 
     idx = processed = 0
+    # track_id -> (processed_idx, bbox) for every person seen so far, used
+    # to feed _find_relink_candidate() when a brand-new track_id shows up.
+    track_last_seen: dict = {}
     try:
         while processed < max_frames:
             ok, frame = cap.read()
@@ -178,9 +328,17 @@ def _run_pipeline_local(
                     x2, y2 = min(W, x2), min(H, y2)
                     crop = frame[y1:y2, x1:x2]
                     name = UNKNOWN_LABEL
+                    track_id = d["track_id"]
                     if fuser is not None and crop.size > 0:
-                        name = fuser.update(d["track_id"], crop)
+                        if track_id not in track_last_seen and track_id not in fuser.committed:
+                            candidate = _find_relink_candidate(
+                                d["bbox"], processed, engine.fps, track_last_seen, fuser.committed,
+                            )
+                            if candidate is not None:
+                                fuser.adopt(track_id, candidate)
+                        name = fuser.update(track_id, crop)
                     people.append({**d, "employee_id": name})
+                    track_last_seen[track_id] = (processed, d["bbox"])
                 elif d["cls_name"] == "cell phone":
                     phones.append(d)
                 elif d["cls_name"] == "laptop":
@@ -188,7 +346,9 @@ def _run_pipeline_local(
                 elif d["cls_name"] == "monitor":
                     monitors.append(d)
             engine.update(processed, people, phones, laptops, monitors)
-            if writer is not None:
+            if writer is not None and processed % annotate_stride == 0:
+                _annotate_frame(frame, people, phones, laptops, monitors,
+                               active_zones, processed / engine.fps)
                 writer.write(frame)
             idx += 1
             processed += 1
@@ -198,6 +358,9 @@ def _run_pipeline_local(
         cap.release()
         if writer is not None:
             writer.release()
+
+    if annotated_path is not None:
+        annotated_path = _compress_video(annotated_path)
 
     engine.flush(processed)
     df = engine.to_dataframe()
@@ -488,6 +651,7 @@ def _checkin_video_multi_local(
     cap = cv2.VideoCapture(source if not str(source).isdigit() else int(source))
     if not cap.isOpened():
         raise RuntimeError(f"Could not open video source: {source}")
+    effective_fps = (cap.get(cv2.CAP_PROP_FPS) or 25.0) / stride
 
     stats = dict(frames_read=0, frames_processed=0)
     # track_id -> (employee_id, best face-match confidence seen for that track).
@@ -498,6 +662,9 @@ def _checkin_video_multi_local(
     # track_id -> list of body crops, capped, used at the end to build each
     # committed employee's daily ReID fingerprint (see daily_gallery.py).
     track_crops: dict = {}
+    # track_id -> (processed_idx, bbox) — feeds _find_relink_candidate(),
+    # same spatiotemporal re-linking _run_pipeline_local uses (see there).
+    track_last_seen: dict = {}
     idx = processed = 0
 
     try:
@@ -529,6 +696,15 @@ def _checkin_video_multi_local(
                     continue
 
                 track_id = d["track_id"]
+
+                if track_id not in track_last_seen and track_id not in fuser.committed:
+                    candidate = _find_relink_candidate(
+                        d["bbox"], processed, effective_fps, track_last_seen, fuser.committed,
+                    )
+                    if candidate is not None:
+                        fuser.adopt(track_id, candidate)
+                track_last_seen[track_id] = (processed, d["bbox"])
+
                 face_match = fuser.match_face(crop)
                 confidence = face_match[1] if face_match is not None else 0.0
 

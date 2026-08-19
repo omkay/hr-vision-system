@@ -6,7 +6,21 @@ from pathlib import Path
 
 try:
     import torch
-    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+    if torch.cuda.is_available():
+        DEVICE = "cuda"
+    elif torch.backends.mps.is_available():
+        # Apple Silicon GPU, via PyTorch's Metal Performance Shaders backend.
+        # Only reachable when this process runs natively on the Mac — Docker
+        # Desktop's Linux VM has no path to the host's Metal device, so the
+        # containerized deployment always falls through to "cpu" here even
+        # on an M-series Mac. See models.py for where this actually gets
+        # used (ReIDEmbedder / PersonObjectDetector via torch/ultralytics)
+        # and _onnx_providers_for() for the separate onnxruntime/CoreML path
+        # InsightFace's FaceEmbedder uses instead (torch device strings
+        # don't apply to onnxruntime sessions).
+        DEVICE = "mps"
+    else:
+        DEVICE = "cpu"
 except ImportError:
     DEVICE = "cpu"
 
@@ -55,5 +69,17 @@ DEFAULT_PROX_PX  = 180
 # motion/blur gates — those thresholds were GA-tuned against native-resolution
 # footage (see GA optimisation/) and downscaling would need a separate re-tune.
 DETECTION_MAX_DIM = 1280
+
+# Annotated debug video (write_video=true on /events/run) writes only 1 out
+# of every ANNOTATE_STRIDE *processed* frames to the output — a human
+# reviewing footage to sanity-check tracking/identity doesn't need every
+# frame, just enough temporal density to follow people moving between
+# zones and confirm labels are stable. This is the single biggest lever on
+# output file size (5x fewer frames written ≈ ~5x smaller before any
+# codec-level compression), on top of the DETECTION_MAX_DIM downscale which
+# already caps the frame resolution itself. The writer's output fps is
+# computed to compensate (see pipeline.py), so playback speed still matches
+# real elapsed time despite the skipped frames.
+DEFAULT_ANNOTATE_STRIDE = 5
 
 YOLO_WEIGHTS = str(PROJECT_DIR / "yolov8m.pt")

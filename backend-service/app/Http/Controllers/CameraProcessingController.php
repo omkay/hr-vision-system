@@ -38,8 +38,12 @@ class CameraProcessingController extends Controller
      * during ReID matching (see daily_gallery.py). Null means "today", the
      * same default vision-service itself applies.
      */
-    private function buildEventsPayload($cameras, ?string $sessionDate = null): array
-    {
+    private function buildEventsPayload(
+        $cameras,
+        ?string $sessionDate = null,
+        bool $writeVideo = false,
+        ?int $annotateStride = null,
+    ): array {
         $baseUrl = rtrim(config('app.internal_url'), '/') . '/storage/';
 
         $videoPaths = [];
@@ -68,17 +72,27 @@ class CameraProcessingController extends Controller
             // than any of them, without materially slowing down the shorter
             // ones (the pipeline stops at end-of-video regardless).
             'max_frames' => 6000,
+            'write_video' => $writeVideo,
         ];
 
         if ($sessionDate !== null) {
             $payload['session_date'] = $sessionDate;
         }
 
+        if ($annotateStride !== null) {
+            $payload['annotate_stride'] = $annotateStride;
+        }
+
         return $payload;
     }
 
-    private function submitJob(Request $request, $cameras, ?string $sessionDate = null)
-    {
+    private function submitJob(
+        Request $request,
+        $cameras,
+        ?string $sessionDate = null,
+        bool $writeVideo = false,
+        ?int $annotateStride = null,
+    ) {
         $missingVideo = $cameras->first(fn ($c) => empty($c->video));
         if ($missingVideo) {
             return response()->json([
@@ -86,7 +100,7 @@ class CameraProcessingController extends Controller
             ], 422);
         }
 
-        $payload = $this->buildEventsPayload($cameras, $sessionDate);
+        $payload = $this->buildEventsPayload($cameras, $sessionDate, $writeVideo, $annotateStride);
         $visionUrl = rtrim(config('services.vision.url'), '/') . '/events/run';
 
         try {
@@ -139,7 +153,12 @@ class CameraProcessingController extends Controller
         description: 'Async — returns immediately with a job id. Poll GET /vision-jobs/{id} for status, then GET /camera/{id}/events once done.',
         tags: ['Processing'],
         security: [['bearerAuth' => []]],
-        parameters: [new OA\Parameter(name: 'id', in: 'path', required: true, description: 'Camera ID.', schema: new OA\Schema(type: 'integer'))],
+        parameters: [
+            new OA\Parameter(name: 'id', in: 'path', required: true, description: 'Camera ID.', schema: new OA\Schema(type: 'integer')),
+            new OA\Parameter(name: 'session_date', in: 'query', required: false, description: 'Which day\'s daily body-fingerprint gallery to prefer during ReID matching. Defaults to today.', schema: new OA\Schema(type: 'string', format: 'date')),
+            new OA\Parameter(name: 'write_video', in: 'query', required: false, description: 'Generate an annotated debug video (boxes/zones/labels drawn in) — see `annotated_videos` once GET /vision-jobs/{id} reports done.', schema: new OA\Schema(type: 'boolean')),
+            new OA\Parameter(name: 'annotate_stride', in: 'query', required: false, description: 'Only relevant when write_video=true — write 1 out of every N processed frames to keep the file small. Defaults to 5.', schema: new OA\Schema(type: 'integer')),
+        ],
         responses: [
             new OA\Response(response: 202, description: 'Job submitted.'),
             new OA\Response(response: 422, description: 'Camera has no uploaded video.'),
@@ -148,9 +167,21 @@ class CameraProcessingController extends Controller
     )]
     public function process(Request $request, $id)
     {
+        $request->validate([
+            'session_date' => 'nullable|date',
+            'write_video' => 'nullable|boolean',
+            'annotate_stride' => 'nullable|integer|min:1',
+        ]);
+
         $camera = Camera::with('zone')->findOrFail($id);
 
-        return $this->submitJob($request, collect([$camera]), $request->input('session_date'));
+        return $this->submitJob(
+            $request,
+            collect([$camera]),
+            $request->input('session_date'),
+            $request->boolean('write_video'),
+            $request->input('annotate_stride'),
+        );
     }
 
     /**
@@ -172,6 +203,26 @@ class CameraProcessingController extends Controller
     {
         $job = VisionJob::with('cameras:id,name')->findOrFail($id);
 
+        // annotated_videos (per-camera debug videos with boxes/zones drawn
+        // in — only present if write_video was requested) only survive
+        // inside the raw_result JSON blob PollVisionEventsJob stores once
+        // the job is done; extract + resolve them to browser-fetchable URLs
+        // here rather than making every caller do that decoding themselves.
+        $annotatedVideos = [];
+        if ($job->raw_result) {
+            $result = json_decode($job->raw_result, true) ?? [];
+            $publicBase = rtrim(config('services.vision.public_url'), '/');
+            foreach (($result['annotated_videos'] ?? []) as $video) {
+                $cameraId = (int) ($video['camera_id'] ?? 0);
+                $camera = $job->cameras->firstWhere('id', $cameraId);
+                $annotatedVideos[] = [
+                    'camera_id' => $cameraId,
+                    'camera_name' => $camera->name ?? null,
+                    'url' => $publicBase . ($video['path'] ?? ''),
+                ];
+            }
+        }
+
         return response()->json([
             'id' => $job->id,
             'vision_job_id' => $job->vision_job_id,
@@ -179,6 +230,7 @@ class CameraProcessingController extends Controller
             'error_message' => $job->error_message,
             'finished_at' => $job->finished_at,
             'cameras' => $job->cameras->pluck('name'),
+            'annotated_videos' => $annotatedVideos,
         ]);
     }
 
@@ -193,6 +245,9 @@ class CameraProcessingController extends Controller
                 required: ['camera_ids'],
                 properties: [
                     new OA\Property(property: 'camera_ids', type: 'array', items: new OA\Items(type: 'integer'), example: [1, 2, 3]),
+                    new OA\Property(property: 'session_date', type: 'string', format: 'date', description: 'Which day\'s daily body-fingerprint gallery to prefer during ReID matching. Defaults to today.'),
+                    new OA\Property(property: 'write_video', type: 'boolean', description: 'Generate an annotated debug video per camera (boxes/zones/labels drawn in) — see the `annotated_videos` field once GET /vision-jobs/{id} reports done.'),
+                    new OA\Property(property: 'annotate_stride', type: 'integer', description: 'Only relevant when write_video=true — write 1 out of every N processed frames to keep the file small. Defaults to 5.'),
                 ],
             ),
         ),
@@ -204,11 +259,19 @@ class CameraProcessingController extends Controller
             'camera_ids' => 'required|array|min:1',
             'camera_ids.*' => 'exists:cameras,id',
             'session_date' => 'nullable|date',
+            'write_video' => 'nullable|boolean',
+            'annotate_stride' => 'nullable|integer|min:1',
         ]);
 
         $cameras = Camera::with('zone')->whereIn('id', $request->camera_ids)->get();
 
-        return $this->submitJob($request, $cameras, $request->input('session_date'));
+        return $this->submitJob(
+            $request,
+            $cameras,
+            $request->input('session_date'),
+            $request->boolean('write_video'),
+            $request->input('annotate_stride'),
+        );
     }
 
     #[OA\Post(
@@ -229,6 +292,8 @@ class CameraProcessingController extends Controller
                 schema: new OA\Schema(required: ['checkin_video', 'camera_ids'], properties: [
                     new OA\Property(property: 'checkin_video', type: 'string', format: 'binary', description: 'mp4/mov/avi/mkv, up to 500MB.'),
                     new OA\Property(property: 'camera_ids', type: 'array', items: new OA\Items(type: 'integer'), example: [1, 2, 3]),
+                    new OA\Property(property: 'write_video', type: 'boolean', description: 'Generate an annotated debug video per zone camera (boxes/zones/labels drawn in) — see `annotated_videos` once GET /vision-jobs/{id} reports done.'),
+                    new OA\Property(property: 'annotate_stride', type: 'integer', description: 'Only relevant when write_video=true — write 1 out of every N processed frames to keep the file small. Defaults to 5.'),
                 ]),
             ),
         ),
@@ -244,6 +309,8 @@ class CameraProcessingController extends Controller
             'checkin_video' => 'required|file|mimes:mp4,mov,avi,mkv|max:512000',
             'camera_ids' => 'required|array|min:1',
             'camera_ids.*' => 'exists:cameras,id',
+            'write_video' => 'nullable|boolean',
+            'annotate_stride' => 'nullable|integer|min:1',
         ]);
 
         $checkinResult = $this->checkinService->identifyAndRecordCheckins($request->file('checkin_video'));
@@ -254,7 +321,13 @@ class CameraProcessingController extends Controller
         $sessionDate = $checkinResult['body']['session_date'];
         $cameras = Camera::with('zone')->whereIn('id', $request->camera_ids)->get();
 
-        $jobResponse = $this->submitJob($request, $cameras, $sessionDate);
+        $jobResponse = $this->submitJob(
+            $request,
+            $cameras,
+            $sessionDate,
+            $request->boolean('write_video'),
+            $request->input('annotate_stride'),
+        );
 
         // submitJob() returns a JsonResponse on its own (used standalone by
         // process()/processBatch()) — merge the checkin summary into it here

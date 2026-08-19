@@ -76,6 +76,24 @@ class IdentityFuser:
             return best_name, best_s
         return None
 
+    def adopt(self, track_id: int, name: str) -> None:
+        """Force-commit *track_id* to *name* without going through vote
+        accumulation.
+
+        Used for spatiotemporal track re-linking (see pipeline.py): when
+        ByteTrack loses a track and starts a new one moments later in
+        roughly the same spot — the common case being a person's visible
+        appearance changing mid-clip (e.g. removing a jacket), which is
+        exactly the scenario same-day ReID is weakest against — the new
+        track otherwise has to re-earn its identity from zero evidence,
+        and may never manage to if neither face nor ReID matches the
+        now-different appearance. Adopting short-circuits that: the new
+        track is presumed to be the same physical person continuing on,
+        so it inherits the identity immediately instead of risking a
+        drawn-out (or permanent) UNKNOWN.
+        """
+        self.committed[track_id] = name
+
     def update(self, track_id: int, crop) -> str:
         if track_id in self.committed:
             return self.committed[track_id]

@@ -438,12 +438,20 @@ function fillCameraSelects() {
   });
 }
 
+function writeVideoOptions(scope = 'process') {
+  return {
+    write_video: !!document.getElementById(scope + 'WriteAnnotatedVideo')?.checked,
+    annotate_stride: Number(document.getElementById(scope + 'AnnotateStride')?.value) || undefined,
+  };
+}
+
 async function processCamera(id) {
   if (!requireAuth()) return;
   showProcessingResult('processing camera #' + id + ' …');
   clearJobLog();
+  clearAnnotatedVideos();
   try {
-    const data = await api(`/camera/${id}/process`, { method: 'POST' });
+    const data = await api(`/camera/${id}/process`, { method: 'POST', body: writeVideoOptions() });
     showProcessingResult(JSON.stringify(data, null, 2));
     toast('processing submitted');
     if (data.job?.id) pollJobStatus(data.job.id);
@@ -464,8 +472,9 @@ async function processBatch() {
   if (!ids.length) { toast('select at least one camera', true); return; }
   showProcessingResult('submitting batch job for cameras: ' + ids.join(', ') + ' …');
   clearJobLog();
+  clearAnnotatedVideos();
   try {
-    const data = await api('/cameras/process-batch', { method: 'POST', body: { camera_ids: ids } });
+    const data = await api('/cameras/process-batch', { method: 'POST', body: { camera_ids: ids, ...writeVideoOptions() } });
     showProcessingResult(JSON.stringify(data, null, 2));
     toast('batch processing submitted');
     if (data.job?.id) pollJobStatus(data.job.id);
@@ -509,6 +518,7 @@ async function pollJobStatus(jobId, attempt = 0) {
     appendJobLog(`job #${jobId} (${(data.cameras || []).join(', ') || 'camera'}) — status: ${data.status}`);
     if (data.status === 'done') {
       appendJobLog('done — check the events panel below.');
+      renderAnnotatedVideos(data.annotated_videos || []);
       return;
     }
     if (data.status === 'error') {
@@ -525,11 +535,36 @@ async function pollJobStatus(jobId, attempt = 0) {
   jobLogTimer = setTimeout(() => pollJobStatus(jobId, attempt + 1), 5000);
 }
 
+/* Annotated debug videos — bounding boxes/zones/labels drawn in by
+   vision-service (only present when write_video was requested), served
+   from its own /outputs static route. Rendered once the job is done, since
+   vision-service only finishes encoding them at that point. */
+
+function clearAnnotatedVideos() {
+  const el = document.getElementById('annotatedVideos');
+  if (el) el.innerHTML = '';
+}
+
+function renderAnnotatedVideos(videos) {
+  const el = document.getElementById('annotatedVideos');
+  if (!el) return;
+  if (!videos.length) {
+    el.innerHTML = '<p class="muted">no annotated videos (write_video wasn\'t checked, or this run had none)</p>';
+    return;
+  }
+  el.innerHTML = videos.map(v => `
+    <div style="display:inline-block;vertical-align:top;margin:6px 10px 6px 0;text-align:center">
+      <div class="muted" style="margin-bottom:4px">${esc(v.camera_name || ('camera #' + v.camera_id))}</div>
+      <video src="${v.url}" controls style="max-width:320px;border-radius:8px;border:1px solid var(--border)"></video>
+    </div>`).join('');
+}
+
 function trackExistingJob() {
   const id = document.getElementById('trackJobIdInput').value.trim();
   if (!id) { toast('enter a job id', true); return; }
   showProcessingResult(`tracking existing job #${id} (not re-submitting anything) …`);
   clearJobLog();
+  clearAnnotatedVideos();
   pollJobStatus(id);
 }
 
@@ -670,10 +705,14 @@ async function submitSequence() {
   const fd = new FormData();
   fd.append('checkin_video', video);
   ids.forEach(id => fd.append('camera_ids[]', id));
+  const opts = writeVideoOptions('sequence');
+  fd.append('write_video', opts.write_video ? '1' : '0');
+  if (opts.annotate_stride) fd.append('annotate_stride', opts.annotate_stride);
 
   const resultEl = document.getElementById('sequenceResult');
   resultEl.textContent = 'submitting — checkin first, then zone processing, this can take a while…';
   clearJobLog();
+  clearAnnotatedVideos();
   try {
     const data = await api('/process-sequence', { method: 'POST', body: fd, isForm: true });
     renderSequenceResult(data);
@@ -833,6 +872,14 @@ function buildLayout() {
 
   <div class="tab" data-tab="3">
     <div class="card">
+      <h2>Annotated video options <span class="muted">(applies to single-camera and batch processing below)</span></h2>
+      <div class="row">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="processWriteAnnotatedVideo" checked> write annotated video (boxes/zones/labels drawn in)</label>
+        <div class="field"><label>Annotate stride</label><input id="processAnnotateStride" type="number" placeholder="5" style="width:80px" min="1"></div>
+      </div>
+      <small class="hint">Writes 1 out of every N processed frames to the output — keeps the file small enough to review while still following tracking by eye. Leave blank for the default (5).</small>
+    </div>
+    <div class="card">
       <h2>Process a single camera</h2>
       <div class="row">
         <div class="field"><label>Camera</label><select id="processCameraSelect" class="camera-select"></select></div>
@@ -853,6 +900,8 @@ function buildLayout() {
         <button class="btn ghost" onclick="trackExistingJob()">track</button>
       </div>
       <div class="result-box" id="jobLog" style="min-height:60px"></div>
+      <h2 style="margin-top:14px">Annotated videos <span class="muted">(populated once the job is done, if write_video was checked)</span></h2>
+      <div id="annotatedVideos"></div>
     </div>
     <div class="card">
       <h2>Activity events</h2>
@@ -915,11 +964,16 @@ function buildLayout() {
         <label class="muted" style="display:block;margin-bottom:6px">Zone cameras to process</label>
         <div class="checkbox-list" id="sequenceCameraList"></div>
       </div>
+      <div class="row" style="margin-top:10px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="sequenceWriteAnnotatedVideo" checked> write annotated video (boxes/zones/labels drawn in)</label>
+        <div class="field"><label>Annotate stride</label><input id="sequenceAnnotateStride" type="number" placeholder="5" style="width:80px" min="1"></div>
+      </div>
       <div style="margin-top:10px"><button class="btn" onclick="submitSequence()">run sequence</button></div>
     </div>
     <div class="card">
       <h2>Result</h2>
       <div class="result-box" id="sequenceResult">no attempt yet</div>
+      <small class="hint">Job status + annotated videos for the zone cameras appear in the Processing &amp; Events tab (they share the same job log/poller).</small>
     </div>
   </div>
 

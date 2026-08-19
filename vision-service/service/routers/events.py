@@ -8,8 +8,9 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from ..config import (
-    DEFAULT_DET_CONF, DEFAULT_DET_IOU, DEFAULT_FACE_THR, DEFAULT_FUSE_WIN,
-    DEFAULT_MAX_FRAMES, DEFAULT_PROX_PX, DEFAULT_REID_THR, DEFAULT_STRIDE, GALLERY_PATH,
+    DEFAULT_ANNOTATE_STRIDE, DEFAULT_DET_CONF, DEFAULT_DET_IOU, DEFAULT_FACE_THR,
+    DEFAULT_FUSE_WIN, DEFAULT_MAX_FRAMES, DEFAULT_PROX_PX, DEFAULT_REID_THR,
+    DEFAULT_STRIDE, GALLERY_PATH,
 )
 from ..gallery import EmployeeGallery
 from ..jobs import store
@@ -87,7 +88,20 @@ class EventsRequest(BaseModel):
     )
     write_video: bool = Field(
         False,
-        description="If true, save an annotated MP4 to `outputs/`. Path is returned in the result.",
+        description=(
+            "If true, save an annotated MP4 per camera — bounding boxes color-coded by "
+            "resolved identity, zone outlines, and object boxes for phone/laptop/monitor — "
+            "to `outputs/`, servable at `/outputs/<name>` (see `annotated_videos` in the result)."
+        ),
+    )
+    annotate_stride: int = Field(
+        DEFAULT_ANNOTATE_STRIDE,
+        description=(
+            "Only relevant when write_video=true. Writes 1 out of every N *processed* frames "
+            "to the annotated video — a human reviewer doesn't need every frame to sanity-check "
+            "tracking, just enough density to follow people between zones. Output fps is adjusted "
+            "so playback speed still matches real elapsed time despite the skipped frames."
+        ),
     )
     session_date: Optional[str] = Field(
         None,
@@ -138,7 +152,7 @@ def _run_all(video_paths, camera_ids, **kwargs):
         records = df.where(df.notna(), other=None).to_dict(orient="records")
         all_events.extend(records)
         if ann is not None:
-            annotated.append(str(ann))
+            annotated.append({"camera_id": cid, "path": f"/outputs/{ann.name}"})
     return {
         "events": all_events,
         "event_count": len(all_events),
@@ -198,6 +212,7 @@ def run(req: EventsRequest):
         max_frames=req.max_frames,
         prox_px=req.prox_px,
         write_video=req.write_video,
+        annotate_stride=req.annotate_stride,
         session_date=req.session_date,
     )
     return {"job_id": job.id, "status": job.status}
