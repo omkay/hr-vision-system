@@ -6,6 +6,18 @@
 <title>أرشيف الفيديو — نيوبارك</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Almarai:wght@400;700;800&display=swap" rel="stylesheet">
+<!-- Flatpickr for date fields (native <input type=date> doesn't render inside
+     the Flutter desktop webview this page is embedded in). Choices.js was
+     dropped from THIS page first — on a page with <video> elements,
+     WebView2 (webview_windows) fails to hit-test position:absolute popups
+     like Choices' dropdown list, the same underlying issue that breaks
+     native <video controls> here — and then removed from dashboard.html
+     and events.html too for consistency, even though those two pages have
+     no <video> tags of their own. See the custom in-flow .iselect widget
+     and (on this page only) the custom video controls further down. -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+<script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+<script src="https://npmcdn.com/flatpickr/dist/l10n/ar.js"></script>
 <style>
   :root {
     --np-dark-blue: #0054A6;
@@ -40,6 +52,38 @@
   .field label { font-size: 11px; color: var(--muted); font-weight: 700; }
   .field select, .field input { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-family: inherit; font-size: 13px; min-width: 150px; background: #fff; color: var(--text); }
 
+  /* Flatpickr — restyled to match the card/field look above. */
+  .flatpickr-calendar { font-family: 'Almarai', sans-serif; z-index: 80; }
+  .flatpickr-day.selected, .flatpickr-day.selected:hover { background: var(--np-dark-blue); border-color: var(--np-dark-blue); }
+  .flatpickr-day.today { border-color: var(--np-light-blue); }
+
+  /* Custom in-flow "select" (.iselect) — replaces Choices.js on this page.
+     No position:absolute popup: the option list is a normal block element
+     that appears below the button and pushes the rest of the page down,
+     since WebView2 fails to hit-test absolutely-positioned popups on pages
+     that also contain <video> elements (see the <head> comment). */
+  .iselect-btn { width: 100%; min-width: 150px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: #fff; font-family: inherit; font-size: 13px; color: var(--text); cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .iselect-btn::after { content: '▾'; color: var(--muted); font-size: 11px; }
+  .iselect-btn.open { border-color: var(--np-dark-blue); }
+  .iselect-list { margin-top: 4px; border: 1px solid var(--border); border-radius: 8px; background: #fff; max-height: 220px; overflow-y: auto; }
+  .iselect-item { display: block; width: 100%; text-align: right; padding: 8px 10px; border: none; border-bottom: 1px solid var(--border); background: none; font-family: inherit; font-size: 13px; color: var(--text); cursor: pointer; }
+  .iselect-item:last-child { border-bottom: none; }
+  .iselect-item:hover, .iselect-item.active { background: #EFF6FF; color: var(--np-dark-blue); }
+
+  /* Custom video controls — native <video controls> chrome doesn't receive
+     clicks in this webview (same root cause as above), so controls are
+     built from plain in-flow buttons/divs instead. translateZ(0) forces
+     the video onto its own normal GPU-composited layer rather than
+     Chromium's hardware video-overlay fast path, which is what was
+     corrupting hit-testing of nearby elements in the first place. */
+  .video-wrap { position: relative; }
+  .video-wrap video { transform: translateZ(0); -webkit-transform: translateZ(0); backface-visibility: hidden; isolation: isolate; display: block; }
+  .video-controls { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+  .vc-btn { border: 1px solid var(--border); background: #fff; border-radius: 6px; width: 30px; height: 28px; font-size: 13px; cursor: pointer; flex-shrink: 0; }
+  .vc-btn:hover { background: #EFF6FF; }
+  .vc-progress { direction: ltr; flex: 1; height: 8px; border-radius: 999px; background: #EEF2F7; overflow: hidden; cursor: pointer; }
+  .vc-progress-fill { height: 100%; width: 0%; background: var(--np-light-blue); }
+
   .job-card { border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 14px; }
   .job-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
   .job-head .job-title { font-weight: 800; font-size: 14px; }
@@ -56,6 +100,16 @@
   .video-item { text-align: center; width: 300px; }
   .video-item video { width: 100%; border-radius: 10px; border: 1px solid var(--border); background: #000; }
   .video-item .cam-name { font-size: 12px; color: var(--muted); margin-bottom: 6px; font-weight: 700; }
+
+  /* "Enlarge" toggle — grows the item in-flow (flex-basis: 100%, forcing it
+     onto its own row) instead of opening an overlay/lightbox. An overlay
+     would stack a close button etc. on top of the <video>, which is exactly
+     the kind of layering WebView2 fails to hit-test correctly on this page
+     (see the <head> notes) — growing the element in place sidesteps that
+     entirely, consistent with the in-flow .iselect widget approach. */
+  .video-item.expanded { flex: 1 1 100%; max-width: 900px; margin: 0 auto; }
+  .video-item.expanded video { max-height: 78vh; object-fit: contain; }
+  .vc-expand { font-size: 15px; }
 
   .empty, .loading { text-align: center; padding: 30px; color: var(--muted); font-size: 13px; }
   .pagination { display: flex; justify-content: center; gap: 10px; align-items: center; margin-top: 10px; }
@@ -90,11 +144,11 @@
     </div>
     <div class="field">
       <label>من تاريخ</label>
-      <input type="date" id="fDateFrom">
+      <input type="text" id="fDateFrom" placeholder="YYYY-MM-DD" autocomplete="off">
     </div>
     <div class="field">
       <label>إلى تاريخ</label>
-      <input type="date" id="fDateTo">
+      <input type="text" id="fDateTo" placeholder="YYYY-MM-DD" autocomplete="off">
     </div>
     <div class="field">
       <button class="btn" onclick="loadJobs(1)">تطبيق الفلاتر</button>
@@ -157,6 +211,65 @@ async function api(path, params = null) {
 
 const STATUS_LABEL = { done: 'مكتمل', running: 'قيد المعالجة', queued: 'بالانتظار', error: 'خطأ' };
 
+// Flatpickr replaces the native <input type=date> UI (see <head> notes) but
+// keeps the underlying input's `.value` in sync, so loadJobs() reading
+// document.getElementById(...).value still works unmodified.
+function initCustomUI() {
+  flatpickr('#fDateFrom', { locale: 'ar', dateFormat: 'Y-m-d' });
+  flatpickr('#fDateTo', { locale: 'ar', dateFormat: 'Y-m-d' });
+  enhanceSelect('fStatus');
+}
+
+// Progressively enhances a <select> into an in-flow (no position:absolute)
+// button + option list, keeping the original <select> hidden in the DOM as
+// the single source of truth for `.value` — every existing read site
+// (loadJobs(), renderJobs()'s cameraFilterName lookup) keeps working
+// unmodified since it still reads the real <select> element. Call this only
+// after every <option> the select needs has already been appended.
+function enhanceSelect(id) {
+  const sel = document.getElementById(id);
+  if (!sel || sel.dataset.enhanced) return;
+  sel.dataset.enhanced = '1';
+  sel.style.display = 'none';
+
+  const wrap = document.createElement('div');
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'iselect-btn';
+  const list = document.createElement('div');
+  list.className = 'iselect-list';
+  list.hidden = true;
+
+  const selectedOpt = () => sel.options[sel.selectedIndex];
+  btn.textContent = selectedOpt() ? selectedOpt().textContent : '';
+
+  Array.from(sel.options).forEach(opt => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'iselect-item' + (opt.selected ? ' active' : '');
+    item.textContent = opt.textContent;
+    item.addEventListener('click', () => {
+      sel.value = opt.value;
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      btn.textContent = opt.textContent;
+      list.querySelectorAll('.iselect-item').forEach(li => li.classList.remove('active'));
+      item.classList.add('active');
+      list.hidden = true;
+      btn.classList.remove('open');
+    });
+    list.appendChild(item);
+  });
+
+  btn.addEventListener('click', () => {
+    list.hidden = !list.hidden;
+    btn.classList.toggle('open', !list.hidden);
+  });
+
+  wrap.appendChild(btn);
+  wrap.appendChild(list);
+  sel.insertAdjacentElement('afterend', wrap);
+}
+
 async function loadCameras() {
   try {
     const res = await api('/camera/get');
@@ -166,6 +279,9 @@ async function loadCameras() {
       o.value = c.id; o.textContent = c.name;
       sel.appendChild(o);
     });
+    // Enhance only after every <option> has been appended — it reads the
+    // select's current DOM state once, at this point in time.
+    enhanceSelect('fCamera');
   } catch (e) { console.error(e); }
 }
 
@@ -196,7 +312,15 @@ function renderJobs(data) {
       ? `<div class="video-grid">${videos.map(v => `
           <div class="video-item">
             <div class="cam-name">${esc(v.camera_name || ('كاميرا #' + v.camera_id))}</div>
-            <video src="${esc(v.url)}" controls preload="metadata"></video>
+            <div class="video-wrap">
+              <video src="${esc(v.url)}" preload="metadata" playsinline></video>
+              <div class="video-controls">
+                <button type="button" class="vc-btn vc-play">►</button>
+                <div class="vc-progress"><div class="vc-progress-fill"></div></div>
+                <button type="button" class="vc-btn vc-mute">🔊</button>
+                <button type="button" class="vc-btn vc-expand" title="تكبير">⤢</button>
+              </div>
+            </div>
           </div>`).join('')}</div>`
       : `<div class="muted">${job.status === 'done' ? 'لا يوجد فيديو موسوم لهذه المهمة (لم يتم تفعيل write_video)' : 'الفيديو غير متاح بعد'}</div>`;
 
@@ -222,6 +346,46 @@ function renderJobs(data) {
   document.getElementById('pageInfo').textContent = `صفحة ${data.current_page} من ${data.last_page}`;
   document.getElementById('prevPage').disabled = data.current_page <= 1;
   document.getElementById('nextPage').disabled = data.current_page >= data.last_page;
+
+  wireVideoControls(container);
+}
+
+// Media events (play/pause/timeupdate/ended) don't bubble, so each
+// .video-wrap rendered by renderJobs() needs its own direct listeners —
+// event delegation on a parent container wouldn't catch these. Called once
+// per render, after the new markup is in the DOM.
+function wireVideoControls(container) {
+  container.querySelectorAll('.video-wrap').forEach(wrap => {
+    const video = wrap.querySelector('video');
+    const playBtn = wrap.querySelector('.vc-play');
+    const muteBtn = wrap.querySelector('.vc-mute');
+    const expandBtn = wrap.querySelector('.vc-expand');
+    const progress = wrap.querySelector('.vc-progress');
+    const fill = wrap.querySelector('.vc-progress-fill');
+    const item = wrap.closest('.video-item');
+
+    playBtn.addEventListener('click', () => { video.paused ? video.play() : video.pause(); });
+    video.addEventListener('play', () => { playBtn.textContent = '❚❚'; });
+    video.addEventListener('pause', () => { playBtn.textContent = '►'; });
+    video.addEventListener('ended', () => { playBtn.textContent = '►'; });
+    video.addEventListener('timeupdate', () => {
+      if (video.duration) fill.style.width = ((video.currentTime / video.duration) * 100) + '%';
+    });
+    muteBtn.addEventListener('click', () => {
+      video.muted = !video.muted;
+      muteBtn.textContent = video.muted ? '🔇' : '🔊';
+    });
+    progress.addEventListener('click', (ev) => {
+      const rect = progress.getBoundingClientRect();
+      const ratio = Math.min(1, Math.max(0, (ev.clientX - rect.left) / rect.width));
+      if (video.duration) video.currentTime = ratio * video.duration;
+    });
+    expandBtn.addEventListener('click', () => {
+      const expanded = item.classList.toggle('expanded');
+      expandBtn.textContent = expanded ? '⤡' : '⤢';
+      expandBtn.title = expanded ? 'تصغير' : 'تكبير';
+    });
+  });
 }
 
 async function loadJobs(page) {
@@ -248,6 +412,7 @@ document.getElementById('nextPage').addEventListener('click', () => loadJobs(cur
 
 (async function init() {
   if (!token()) showConnWarning('لا يوجد رمز دخول — مرر ?token=... عند تضمين هذه الصفحة.');
+  initCustomUI();
   await loadCameras();
   await loadJobs(1);
 })();

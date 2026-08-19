@@ -347,15 +347,19 @@ class CameraProcessingController extends Controller
             . 'gallery in vision-service — then submits the given zone cameras for /events/run '
             . 'processing using that same session_date, so cross-camera ReID matching prefers '
             . "today's fresh appearance over the static enrollment gallery. See daily_gallery.py "
-            . '/ IdentityFuser.match_reid in vision-service.',
+            . '/ IdentityFuser.match_reid in vision-service. The checkin video can be supplied '
+            . 'either as a fresh upload (`checkin_video`) or by pointing at an already-stored '
+            . 'camera (`checkin_camera_id`) — e.g. a persistent "Checkin Camera" added the same '
+            . 'way as any other zone camera — so it doesn\'t need to be re-uploaded every call.',
         tags: ['Processing'],
         security: [['bearerAuth' => []]],
         requestBody: new OA\RequestBody(
             required: true,
             content: new OA\MediaType(
                 mediaType: 'multipart/form-data',
-                schema: new OA\Schema(required: ['checkin_video', 'camera_ids'], properties: [
-                    new OA\Property(property: 'checkin_video', type: 'string', format: 'binary', description: 'mp4/mov/avi/mkv, up to 500MB.'),
+                schema: new OA\Schema(required: ['camera_ids'], properties: [
+                    new OA\Property(property: 'checkin_video', type: 'string', format: 'binary', description: 'mp4/mov/avi/mkv, up to 500MB. Required unless checkin_camera_id is given.'),
+                    new OA\Property(property: 'checkin_camera_id', type: 'integer', description: 'Use an already-stored camera\'s video for the checkin step instead of uploading one. Required unless checkin_video is given.'),
                     new OA\Property(property: 'camera_ids', type: 'array', items: new OA\Items(type: 'integer'), example: [1, 2, 3]),
                     new OA\Property(property: 'write_video', type: 'boolean', description: 'Generate an annotated debug video per zone camera (boxes/zones/labels drawn in) — see `annotated_videos` once GET /vision-jobs/{id} reports done.'),
                     new OA\Property(property: 'annotate_stride', type: 'integer', description: 'Only relevant when write_video=true — write 1 out of every N processed frames to keep the file small. Defaults to 5.'),
@@ -371,14 +375,21 @@ class CameraProcessingController extends Controller
     public function processSequence(Request $request)
     {
         $request->validate([
-            'checkin_video' => 'required|file|mimes:mp4,mov,avi,mkv|max:512000',
+            'checkin_video' => 'required_without:checkin_camera_id|nullable|file|mimes:mp4,mov,avi,mkv|max:512000',
+            'checkin_camera_id' => 'required_without:checkin_video|nullable|integer|exists:cameras,id',
             'camera_ids' => 'required|array|min:1',
             'camera_ids.*' => 'exists:cameras,id',
             'write_video' => 'nullable|boolean',
             'annotate_stride' => 'nullable|integer|min:1',
         ]);
 
-        $checkinResult = $this->checkinService->identifyAndRecordCheckins($request->file('checkin_video'));
+        if ($request->filled('checkin_camera_id')) {
+            $checkinCamera = Camera::findOrFail($request->input('checkin_camera_id'));
+            $checkinResult = $this->checkinService->identifyAndRecordCheckinsFromCamera($checkinCamera);
+        } else {
+            $checkinResult = $this->checkinService->identifyAndRecordCheckins($request->file('checkin_video'));
+        }
+
         if (! $checkinResult['ok']) {
             return response()->json($checkinResult['body'], $checkinResult['status']);
         }

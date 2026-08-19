@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\ActivityEvent;
+use App\Models\Camera;
 use App\Models\Employee;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Http;
@@ -30,6 +31,39 @@ class CheckinService
     {
         $videoPath = $video->store('checkins', 'public');
         $videoUrl = rtrim(config('app.internal_url'), '/') . '/storage/' . $videoPath;
+
+        return $this->runCheckinVideo($videoUrl);
+    }
+
+    /**
+     * Same as identifyAndRecordCheckins(), but for a checkin video that's
+     * already stored against a persistent Camera record (e.g. a "Checkin
+     * Camera" added like any other zone camera) instead of being freshly
+     * uploaded in this request. Avoids re-uploading the same file on every
+     * /process-sequence call just to point the checkin pipeline at it.
+     */
+    public function identifyAndRecordCheckinsFromCamera(Camera $camera): array
+    {
+        if (empty($camera->video)) {
+            return [
+                'ok' => false,
+                'status' => 422,
+                'body' => ['message' => "الكاميرا '{$camera->name}' لا تحتوي على فيديو مرفوع"],
+            ];
+        }
+
+        $videoUrl = rtrim(config('app.internal_url'), '/') . '/storage/' . $camera->video;
+
+        return $this->runCheckinVideo($videoUrl);
+    }
+
+    /**
+     * Shared tail end of both entry points above — everything from calling
+     * vision-service's /checkin/video-multi onward is identical whether the
+     * video came from a fresh upload or an already-stored camera.
+     */
+    private function runCheckinVideo(string $videoUrl): array
+    {
         $visionUrl = rtrim(config('services.vision.url'), '/') . '/checkin/video-multi';
 
         try {

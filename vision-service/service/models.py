@@ -12,7 +12,7 @@ from typing import List, Optional
 import cv2
 import numpy as np
 
-from .config import DEVICE, YOLO_WEIGHTS
+from .config import DEVICE, YOLO_WEIGHTS, DEFAULT_BEHAVIOR_OBJ_CONF
 
 _lock = threading.Lock()
 _face_emb = None
@@ -110,16 +110,26 @@ def _allow_legacy_torch_load():
 
 TARGET_CLASSES = {0: "person", 67: "cell phone", 63: "laptop", 62: "monitor"}
 
+# Stock COCO classes that are easily confused with domain-specific background
+# objects (a dish rack read as "cell phone", a cleaning robot read as
+# "monitor") — these need a stricter confidence bar than "person" before
+# they're trusted at all. YOLO's own conf= param applies one threshold to
+# every class in a single .track() call, so this is enforced as a post-filter
+# below rather than by re-running detection per class.
+BEHAVIOR_CLASSES = {"cell phone", "laptop", "monitor"}
+
 
 class PersonObjectDetector:
     def __init__(self, weights: str = YOLO_WEIGHTS, device: str = DEVICE,
-                 conf: float = 0.30, iou: float = 0.50):
+                 conf: float = 0.30, iou: float = 0.50,
+                 behavior_conf: float = DEFAULT_BEHAVIOR_OBJ_CONF):
         from ultralytics import YOLO
         with _allow_legacy_torch_load():
             self.model = YOLO(weights)
         self.device = device
         self.conf = conf
         self.iou = iou
+        self.behavior_conf = behavior_conf
 
     def reset_tracker(self):
         """Clear ByteTrack state so the next video starts with a clean slate.
@@ -134,7 +144,14 @@ class PersonObjectDetector:
             for tracker in getattr(predictor, "trackers", None) or []:
                 tracker.reset()
 
-    def track(self, frame_bgr, conf=None, iou=None):
+    def track(self, frame_bgr, conf=None, iou=None, behavior_conf=None):
+        # conf= here is the LOW bar (0.30 by default) so "person" detections
+        # aren't missed — ultralytics applies one threshold to the whole
+        # frame in a single .track() call. BEHAVIOR_CLASSES are then held to
+        # a stricter behavior_conf below, post-hoc, since a false "cell
+        # phone"/"monitor" reading is much more visually plausible on random
+        # background objects than a false "person" is.
+        behavior_conf = behavior_conf if behavior_conf is not None else self.behavior_conf
         res = self.model.track(
             frame_bgr, persist=True,
             conf=conf if conf is not None else self.conf,
@@ -153,8 +170,11 @@ class PersonObjectDetector:
         for b, c, k, tid in zip(xyxy, conf_, cls, ids):
             if k not in TARGET_CLASSES:
                 continue
+            cls_name = TARGET_CLASSES[int(k)]
+            if cls_name in BEHAVIOR_CLASSES and float(c) < behavior_conf:
+                continue
             out.append(dict(bbox=b, conf=float(c), cls_id=int(k),
-                            cls_name=TARGET_CLASSES[int(k)], track_id=int(tid)))
+                            cls_name=cls_name, track_id=int(tid)))
         return out
 
 

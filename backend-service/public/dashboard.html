@@ -7,6 +7,16 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Almarai:wght@400;700;800&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<!-- Flatpickr for date fields: native <input type=date> doesn't render
+     inside the Flutter desktop webview this page is embedded in. Choices.js
+     was dropped from all three embedded pages (this one, videos.html,
+     events.html) after it was found to break click handling inside
+     WebView2 (webview_windows) on videos.html — see the custom in-flow
+     .iselect widget further down instead, kept consistent across all three
+     pages rather than relying on a page-by-page risk assessment. -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+<script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+<script src="https://npmcdn.com/flatpickr/dist/l10n/ar.js"></script>
 <style>
   :root {
     --np-dark-blue: #0054A6;
@@ -47,6 +57,24 @@
   .field { display: flex; flex-direction: column; gap: 5px; }
   .field label { font-size: 11px; color: var(--muted); font-weight: 700; }
   .field select, .field input { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-family: inherit; font-size: 13px; min-width: 150px; background: #fff; color: var(--text); }
+
+  /* Flatpickr — restyled to match the card/field look above. */
+  .flatpickr-calendar { font-family: 'Almarai', sans-serif; z-index: 80; }
+  .flatpickr-day.selected, .flatpickr-day.selected:hover { background: var(--np-dark-blue); border-color: var(--np-dark-blue); }
+  .flatpickr-day.today { border-color: var(--np-light-blue); }
+
+  /* Custom in-flow "select" (.iselect) — replaces Choices.js on this page.
+     No position:absolute popup: the option list is a normal block element
+     that appears below the button and pushes the rest of the page down.
+     Kept identical to videos.html/events.html for consistency, even though
+     this page has no <video> elements of its own. */
+  .iselect-btn { width: 100%; min-width: 150px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: #fff; font-family: inherit; font-size: 13px; color: var(--text); cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .iselect-btn::after { content: '▾'; color: var(--muted); font-size: 11px; }
+  .iselect-btn.open { border-color: var(--np-dark-blue); }
+  .iselect-list { margin-top: 4px; border: 1px solid var(--border); border-radius: 8px; background: #fff; max-height: 220px; overflow-y: auto; }
+  .iselect-item { display: block; width: 100%; text-align: right; padding: 8px 10px; border: none; border-bottom: 1px solid var(--border); background: none; font-family: inherit; font-size: 13px; color: var(--text); cursor: pointer; }
+  .iselect-item:last-child { border-bottom: none; }
+  .iselect-item:hover, .iselect-item.active { background: #EFF6FF; color: var(--np-dark-blue); }
 
   /* KPI grid */
   .kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 22px; }
@@ -98,11 +126,11 @@
   <div class="card filters">
     <div class="field">
       <label>من تاريخ</label>
-      <input type="date" id="fDateFrom">
+      <input type="text" id="fDateFrom" placeholder="YYYY-MM-DD" autocomplete="off">
     </div>
     <div class="field">
       <label>إلى تاريخ</label>
-      <input type="date" id="fDateTo">
+      <input type="text" id="fDateTo" placeholder="YYYY-MM-DD" autocomplete="off">
     </div>
     <div class="field">
       <label>الموظف</label>
@@ -241,6 +269,67 @@ function todayStr() {
 
 function destroyChart(id) { if (charts[id]) { charts[id].destroy(); delete charts[id]; } }
 
+// Flatpickr replaces the native <input type=date> UI (see the CSS/CDN
+// notes above) but keeps the underlying input's `.value` in sync, so every
+// place elsewhere in this file that reads document.getElementById(...).value
+// still works unmodified.
+let fpDateFrom, fpDateTo;
+
+function initCustomUI() {
+  fpDateFrom = flatpickr('#fDateFrom', { locale: 'ar', dateFormat: 'Y-m-d' });
+  fpDateTo = flatpickr('#fDateTo', { locale: 'ar', dateFormat: 'Y-m-d' });
+}
+
+// Progressively enhances a <select> into an in-flow (no position:absolute)
+// button + option list, keeping the original <select> hidden in the DOM as
+// the single source of truth for `.value` — every existing read site
+// (currentFilters(), etc.) keeps working unmodified since it still reads
+// the real <select> element. Call this only after every <option> the
+// select needs has already been appended. Identical to videos.html/events.html.
+function enhanceSelect(id) {
+  const sel = document.getElementById(id);
+  if (!sel || sel.dataset.enhanced) return;
+  sel.dataset.enhanced = '1';
+  sel.style.display = 'none';
+
+  const wrap = document.createElement('div');
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'iselect-btn';
+  const list = document.createElement('div');
+  list.className = 'iselect-list';
+  list.hidden = true;
+
+  const selectedOpt = () => sel.options[sel.selectedIndex];
+  btn.textContent = selectedOpt() ? selectedOpt().textContent : '';
+
+  Array.from(sel.options).forEach(opt => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'iselect-item' + (opt.selected ? ' active' : '');
+    item.textContent = opt.textContent;
+    item.addEventListener('click', () => {
+      sel.value = opt.value;
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      btn.textContent = opt.textContent;
+      list.querySelectorAll('.iselect-item').forEach(li => li.classList.remove('active'));
+      item.classList.add('active');
+      list.hidden = true;
+      btn.classList.remove('open');
+    });
+    list.appendChild(item);
+  });
+
+  btn.addEventListener('click', () => {
+    list.hidden = !list.hidden;
+    btn.classList.toggle('open', !list.hidden);
+  });
+
+  wrap.appendChild(btn);
+  wrap.appendChild(list);
+  sel.insertAdjacentElement('afterend', wrap);
+}
+
 async function populateFilterOptions() {
   try {
     const [emp, zones] = await Promise.all([api('/employees/get'), api('/zone/get')]);
@@ -250,12 +339,18 @@ async function populateFilterOptions() {
       o.value = e.id; o.textContent = e.name;
       empSel.appendChild(o);
     });
+    // Enhance only after every <option> has been appended — it reads the
+    // select's current DOM state once, at this point in time.
+    enhanceSelect('fEmployee');
+
     const zoneSel = document.getElementById('fZone');
     (zones.Zone || []).forEach(z => {
       const o = document.createElement('option');
       o.value = z.name; o.textContent = z.name;
       zoneSel.appendChild(o);
     });
+    enhanceSelect('fZone');
+
     document.getElementById('kpiEmployees').textContent = (emp.employees || []).length;
     document.getElementById('kpiZones').textContent = (zones.Zone || []).length;
   } catch (e) { console.error(e); }
@@ -463,7 +558,8 @@ async function loadAll() {
 
 (async function init() {
   Chart.defaults.font.family = 'Almarai';
-  document.getElementById('fDateTo').value = todayStr();
+  initCustomUI();
+  fpDateTo.setDate(todayStr(), true);
   if (!token()) showConnWarning('لا يوجد رمز دخول — مرر ?token=... عند تضمين هذه الصفحة.');
   await populateFilterOptions();
   await loadAll();

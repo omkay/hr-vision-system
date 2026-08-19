@@ -90,7 +90,7 @@ class Event:
 
 class EventEngine:
     def __init__(self, fps, zones, grace_s=1.5,
-                 proximity_px=180, phone_iou_thr=0.05,
+                 proximity_px=180, phone_iou_thr=0.05, phone_overlap_thr=0.5,
                  work_device_iou_thr=0.02, work_device_overlap_thr=0.25,
                  presence_min_s=2, phone_min_s=2, working_min_s=3,
                  interaction_min_s=4):
@@ -99,6 +99,7 @@ class EventEngine:
         self.grace_frames = int(grace_s * fps)
         self.prox = proximity_px
         self.phone_iou = phone_iou_thr
+        self.phone_overlap = phone_overlap_thr
         self.work_iou = work_device_iou_thr
         self.work_overlap = work_device_overlap_thr
         self.mins = {"presence": presence_min_s, "phone_use": phone_min_s,
@@ -161,7 +162,7 @@ class EventEngine:
             pb = p["bbox"]
             for ph in phones:
                 iou, overlap_on_phone = self._bbox_inter_metrics(pb, ph["bbox"])
-                if iou >= self.phone_iou or overlap_on_phone > 0.5:
+                if iou >= self.phone_iou or overlap_on_phone > self.phone_overlap:
                     k = self._key("phone_use", p["employee_id"])
                     self._start_or_refresh(k, "phone_use", p["employee_id"], fidx)
 
@@ -237,3 +238,33 @@ class EventEngine:
         return (pd.DataFrame(rows)
                 .sort_values(["start_s", "employee_id"])
                 .reset_index(drop=True))
+
+
+def filter_objects_near_people(people, objects, iou_thr, overlap_thr):
+    """Keep only `objects` (phones/laptops/monitors) whose bbox is near or
+    substantially overlapping at least one PERSON bbox, using the same
+    iou/overlap thresholds EventEngine.update() already applies before
+    logging a phone_use/working event (see self.phone_iou / self.work_iou /
+    self.work_overlap above).
+
+    This exists for pipeline.py to decide whether to DRAW a detected object
+    in the annotated debug video. A misclassified background object (a dish
+    rack read as "cell phone", a cleaning robot read as "monitor") never has
+    a person plausibly using it — EventEngine.update() already silently
+    ignores it and never logs an event, but until this filter existed the
+    annotated video still drew a box for it anyway, since _annotate_frame()
+    was fed the raw per-frame detections directly. Reusing the exact same
+    proximity rule that already gates events means a lone false-positive
+    object with nobody nearby is hidden from the video too, with no need for
+    a second, separately-tuned threshold.
+    """
+    if not people or not objects:
+        return []
+    kept = []
+    for obj in objects:
+        for p in people:
+            iou, overlap_on_obj = EventEngine._bbox_inter_metrics(p["bbox"], obj["bbox"])
+            if iou >= iou_thr or overlap_on_obj > overlap_thr:
+                kept.append(obj)
+                break
+    return kept

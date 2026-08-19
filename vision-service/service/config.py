@@ -52,6 +52,16 @@ DEFAULT_DET_CONF = 0.30
 DEFAULT_DET_IOU  = 0.50
 DEFAULT_FACE_THR = 0.45
 DEFAULT_REID_THR = 0.75
+
+# YOLO's "person" detections use DEFAULT_DET_CONF (0.30) — a low bar is fine
+# there since a person-shaped false positive is rare and ByteTrack/IdentityFuser
+# provide further downstream filtering. But "cell phone"/"laptop"/"monitor" are
+# stock COCO classes never tuned for this domain, and at 0.30 they're easily
+# confused with visually-similar background objects — a metal dish rack read
+# as "cell phone", a boxy floor-cleaning robot read as "monitor" (both seen in
+# real annotated-video output). These behavior-relevant classes need a much
+# higher bar before they're trusted enough to even be drawn/considered.
+DEFAULT_BEHAVIOR_OBJ_CONF = 0.60
 DEFAULT_FUSE_WIN = 30
 DEFAULT_STRIDE   = 2
 DEFAULT_MAX_FRAMES = 600

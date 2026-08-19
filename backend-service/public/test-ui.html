@@ -438,10 +438,22 @@ function fillCameraSelects() {
   });
 }
 
+// Set by submitCheckin() from the /checkin response's top-level
+// `session_date`. processCamera()/processBatch() thread this into
+// /camera/{id}/process and /cameras/process-batch below so that testing
+// checkin + zone cameras as two separate manual steps (rather than the
+// single /process-sequence call, which already wires this correctly)
+// still lets zone processing match against that day's daily fingerprint
+// gallery instead of silently falling back to today's date server-side —
+// see CameraProcessingController::buildEventsPayload() and
+// pipeline.py's `session_date or _date.today()` fallback.
+let lastCheckinSessionDate = null;
+
 function writeVideoOptions(scope = 'process') {
   return {
     write_video: !!document.getElementById(scope + 'WriteAnnotatedVideo')?.checked,
     annotate_stride: Number(document.getElementById(scope + 'AnnotateStride')?.value) || undefined,
+    session_date: lastCheckinSessionDate || undefined,
   };
 }
 
@@ -628,8 +640,9 @@ async function submitCheckin() {
   resultEl.textContent = 'submitting — scanning the whole clip, this can take a while…';
   try {
     const data = await api('/checkin', { method: 'POST', body: fd, isForm: true });
+    lastCheckinSessionDate = data.session_date || null;
     renderCheckinVideoResult(data.checkins || []);
-    toast(`checkin processed — ${(data.checkins || []).length} identified`);
+    toast(`checkin processed — ${(data.checkins || []).length} identified — session_date ${lastCheckinSessionDate || '?'}`);
     loadCheckins();
   } catch (e) {
     const pill = e.status === 422 ? '<span class="pill err">422 nobody recognized</span>'
@@ -646,11 +659,15 @@ const CHECKIN_STATUS_PILL = {
 
 function renderCheckinVideoResult(checkins) {
   const resultEl = document.getElementById('checkinResult');
+  // Shown so it's obvious this got captured and will be reused by
+  // processCamera()/processBatch() below via writeVideoOptions() —
+  // otherwise this step's effect on later zone-camera runs is invisible.
+  const sessionDatePill = `<div><span class="pill info">session_date: ${esc(lastCheckinSessionDate || '?')}</span> — reused automatically for "process" / "process selected" / "process batch" below</div>`;
   if (!checkins.length) {
-    resultEl.innerHTML = '<span class="pill err">nobody identified in this clip</span>';
+    resultEl.innerHTML = sessionDatePill + '<span class="pill err">nobody identified in this clip</span>';
     return;
   }
-  resultEl.innerHTML = `<table><thead><tr><th>Employee</th><th>Status</th><th>Confidence</th><th>Checked in at</th></tr></thead><tbody>
+  resultEl.innerHTML = sessionDatePill + `<table><thead><tr><th>Employee</th><th>Status</th><th>Confidence</th><th>Checked in at</th></tr></thead><tbody>
     ${checkins.map(c => `<tr>
       <td>${c.name ? esc(c.name) : (c.job_num ? 'job #' + esc(c.job_num) : '<span class="muted">—</span>')}</td>
       <td><span class="pill ${CHECKIN_STATUS_PILL[c.status] || 'info'}">${esc(c.status)}</span></td>

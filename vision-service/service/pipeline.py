@@ -19,7 +19,7 @@ from .config import (
     OUT_DIR,
 )
 from . import daily_gallery as daily_gallery_store
-from .events_engine import EventEngine, Zone, load_zones_for_video
+from .events_engine import EventEngine, Zone, load_zones_for_video, filter_objects_near_people
 from .schemas import ZoneDefinition
 from .gallery import EmployeeGallery
 from .identity import IdentityFuser, UNKNOWN_LABEL
@@ -350,7 +350,17 @@ def _run_pipeline_local(
                     monitors.append(d)
             engine.update(processed, people, phones, laptops, monitors)
             if writer is not None and processed % annotate_stride == 0:
-                _annotate_frame(frame, people, phones, laptops, monitors,
+                # Draw only phone/laptop/monitor detections that are actually
+                # near a person — the same proximity rule engine.update() just
+                # used to decide whether to log a phone_use/working event.
+                # Without this, a misclassified background object (dish rack
+                # as "cell phone", cleaning robot as "monitor") gets a box
+                # drawn in the video even on frames where nobody is anywhere
+                # near it and no event was ever logged for it.
+                draw_phones = filter_objects_near_people(people, phones, engine.phone_iou, engine.phone_overlap)
+                draw_laptops = filter_objects_near_people(people, laptops, engine.work_iou, engine.work_overlap)
+                draw_monitors = filter_objects_near_people(people, monitors, engine.work_iou, engine.work_overlap)
+                _annotate_frame(frame, people, draw_phones, draw_laptops, draw_monitors,
                                active_zones, processed / engine.fps)
                 writer.write(frame)
             idx += 1
