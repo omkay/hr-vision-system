@@ -7,7 +7,9 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
+from .config import OUT_DIR
 from .routers import checkin, enroll, events, files
 
 _DESCRIPTION = """
@@ -81,6 +83,12 @@ app.include_router(enroll.router)
 app.include_router(checkin.router)
 app.include_router(events.router)
 app.include_router(files.router)
+
+# Serves annotated debug videos (write_video=true on /events/run) so a
+# reviewer can actually watch them — job results reference these at
+# /outputs/<filename> (see AnnotatedVideoRef in schemas.py). Read-only,
+# no auth — same trust boundary as the rest of this internal service.
+app.mount("/outputs", StaticFiles(directory=OUT_DIR), name="outputs")
 
 
 @app.get("/health", tags=["health"], summary="Service health check")

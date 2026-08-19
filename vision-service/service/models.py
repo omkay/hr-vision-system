@@ -20,11 +20,35 @@ _reid_emb = None
 _detector = None
 
 
+def _onnx_providers_for(device: str) -> list:
+    """InsightFace runs on onnxruntime, not torch — torch device strings
+    (cuda/mps/cpu) don't apply to it directly, so this maps DEVICE to the
+    matching onnxruntime execution provider, falling back to CPU if the
+    installed onnxruntime build doesn't actually have that provider
+    compiled in (e.g. a CPU-only wheel) rather than raising at model-load
+    time.
+    """
+    import onnxruntime as ort
+    available = ort.get_available_providers()
+
+    wanted = {
+        "cuda": "CUDAExecutionProvider",
+        # CoreML EP — Apple Neural Engine / GPU via Core ML, only relevant
+        # when this process runs natively on macOS (see config.py's DEVICE
+        # comment). Standard onnxruntime wheels for macOS bundle this, but
+        # it's not guaranteed for every build, hence the availability check.
+        "mps": "CoreMLExecutionProvider",
+    }.get(device)
+
+    if wanted and wanted in available:
+        return [wanted, "CPUExecutionProvider"]
+    return ["CPUExecutionProvider"]
+
+
 class FaceEmbedder:
     def __init__(self, device: str = DEVICE):
         from insightface.app import FaceAnalysis
-        providers = (["CUDAExecutionProvider", "CPUExecutionProvider"]
-                     if device == "cuda" else ["CPUExecutionProvider"])
+        providers = _onnx_providers_for(device)
         self.app = FaceAnalysis(name="buffalo_l", providers=providers)
         self.app.prepare(ctx_id=0 if device == "cuda" else -1, det_size=(640, 640))
 

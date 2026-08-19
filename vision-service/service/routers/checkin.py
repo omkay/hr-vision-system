@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -228,6 +229,15 @@ class CheckinVideoMultiRequest(BaseModel):
     )
     det_conf: float = Field(DEFAULT_DET_CONF, description="YOLOv8 person-detection confidence threshold.")
     det_iou: float = Field(DEFAULT_DET_IOU, description="YOLOv8 NMS IoU threshold.")
+    session_date: Optional[str] = Field(
+        None,
+        description=(
+            "Date (YYYY-MM-DD) to save this scan's daily body fingerprints under — "
+            "see the `daily_gallery` docs. Defaults to today. Pass the same value "
+            "to `POST /events/run`'s `session_date` for zone videos from this same "
+            "day so they benefit from today's fresh appearance during ReID matching."
+        ),
+    )
 
     model_config = {
         "json_schema_extra": {
@@ -281,6 +291,7 @@ def checkin_video_multi_endpoint(req: CheckinVideoMultiRequest):
             max_frames=req.max_frames,
             det_conf=req.det_conf,
             det_iou=req.det_iou,
+            session_date=req.session_date,
         )
     except RuntimeError as e:
         raise HTTPException(400, str(e))

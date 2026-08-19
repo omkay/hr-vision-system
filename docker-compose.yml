@@ -49,11 +49,36 @@ services:
       QUEUE_CONNECTION: database
       REDIS_HOST: redis
       REDIS_PORT: "6379"
-      VISION_SERVICE_URL: http://vision-service:8000
+      # Currently pointed at vision-service running NATIVELY on the host
+      # (venv + `uvicorn service.app:app`) instead of the Dockerized
+      # container, to get real Apple Silicon GPU/ANE acceleration — Docker
+      # Desktop's Linux VM has no path to the host's Metal device, so the
+      # containerized service is always CPU-only even on an M-series Mac.
+      # host.docker.internal is Docker Desktop for Mac's DNS name for the
+      # host machine. The vision-service container is stopped
+      # (`docker compose stop vision-service`) while this is active, since
+      # both would otherwise fight over host port 8000.
+      # To go back to the Dockerized path: set this back to
+      # http://vision-service:8000 and `docker compose up -d vision-service`.
+      VISION_SERVICE_URL: http://host.docker.internal:8000
+      # Browser-facing URL for vision-service (annotated-video links only —
+      # see config/services.php). localhost works here regardless of
+      # whether vision-service is Dockerized or running natively, since its
+      # port is published to the host either way.
+      VISION_SERVICE_PUBLIC_URL: http://localhost:8000
       # APP_URL (above) is browser-facing and unreachable from inside other containers.
       # Any code building a URL to hand to vision-service (camera video, employee photo)
       # must use this instead of asset()/Storage::url() — see ADR-001 in backend-service/.
-      INTERNAL_APP_URL: http://hr-app:8080
+      #
+      # Currently http://localhost:8080, not http://hr-app:8080, because
+      # vision-service is running NATIVELY on the host right now (see
+      # VISION_SERVICE_URL above) — hr-app is Docker Compose's internal DNS
+      # name for this container, resolvable only from inside the Docker
+      # network, not from a process running directly on the host. hr-app
+      # publishes 8080 to the host's loopback interface, so localhost works
+      # from there. Set this back to http://hr-app:8080 together with
+      # VISION_SERVICE_URL when going back to the Dockerized vision-service.
+      INTERNAL_APP_URL: http://localhost:8080
       # Without this, php -S is single-threaded: a synchronous request that calls OUT to
       # vision-service (e.g. POST /checkin), which then calls BACK into hr-app to fetch
       # the photo, deadlocks against itself until the outbound call times out. Enrollment

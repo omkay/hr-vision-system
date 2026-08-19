@@ -6,6 +6,7 @@ use App\Http\Controllers\CheckinController;
 use App\Http\Controllers\EmployeeController;
 use App\Http\Controllers\EmployeePhotoController;
 use App\Http\Controllers\LogController;
+use App\Http\Controllers\ReportController;
 use App\Http\Controllers\RoleController;
 use App\Http\Controllers\ZoneController;
 use App\Http\Controllers\UserController;
@@ -26,9 +27,14 @@ Route::middleware(['filter_input', 'auth:sanctum', 'check.idel', 'authorization:
 
     Route::post('/camera/{id}/process', [CameraProcessingController::class, 'process']);
     Route::post('/cameras/process-batch', [CameraProcessingController::class, 'processBatch']);
+    // Full daily flow in one call: checkin video first (seeds that day's
+    // body-fingerprint gallery in vision-service), then the given zone
+    // cameras processed against that same day. See processSequence().
+    Route::post('/process-sequence', [CameraProcessingController::class, 'processSequence']);
     Route::get('/camera/{id}/events', [CameraProcessingController::class, 'events']);
     Route::get('/events', [CameraProcessingController::class, 'allEvents']);
     Route::get('/vision-jobs/{id}', [CameraProcessingController::class, 'jobStatus']);
+    Route::get('/reports/summary', [ReportController::class, 'summary']);
 
     Route::post('/employees/add', [EmployeeController::class, 'store']);
     Route::get('/employees/get', [EmployeeController::class, 'get_employees']);
