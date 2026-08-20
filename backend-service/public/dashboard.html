@@ -177,6 +177,12 @@
     <div class="card kpi"><div class="icon light">🕒</div><div><div class="value" id="kpiTrackedHours">—</div><div class="label">إجمالي الوقت المرصود (ساعة)</div></div></div>
   </div>
 
+  <div class="kpi-grid">
+    <div class="card kpi"><div class="icon green">📅</div><div><div class="value" id="kpiMonthlyAttendance">—</div><div class="label">نسبة الحضور لهذا الشهر</div></div></div>
+    <div class="card kpi"><div class="icon blue">📍</div><div><div class="value" id="kpiAllocatedPresence">—</div><div class="label">التواجد في المناطق المخصصة</div></div></div>
+    <div class="card kpi"><div class="icon red">⏳</div><div><div class="value" id="kpiNonWorkTime">—</div><div class="label">وقت غير مرتبط بالعمل (دقيقة)</div></div></div>
+  </div>
+
   <div class="charts-grid">
     <div class="card">
       <h2>توزيع الأحداث حسب النوع</h2>
@@ -262,9 +268,16 @@ async function api(path, params = null) {
    Dashboard data + rendering
    --------------------------------------------------------------------- */
 let charts = {};
+let employeesCache = [];
+let employeeZoneMap = new Map();
 
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
+}
+
+function monthStartStr() {
+  const d = new Date();
+  return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10);
 }
 
 function destroyChart(id) { if (charts[id]) { charts[id].destroy(); delete charts[id]; } }
@@ -333,8 +346,14 @@ function enhanceSelect(id) {
 async function populateFilterOptions() {
   try {
     const [emp, zones] = await Promise.all([api('/employees/get'), api('/zone/get')]);
+    employeesCache = emp.employees || [];
+    employeeZoneMap = new Map(employeesCache.map(e => [
+      String(e.id),
+      new Set((e.zones || []).map(z => z.name).filter(Boolean)),
+    ]));
+
     const empSel = document.getElementById('fEmployee');
-    (emp.employees || []).forEach(e => {
+    employeesCache.forEach(e => {
       const o = document.createElement('option');
       o.value = e.id; o.textContent = e.name;
       empSel.appendChild(o);
@@ -351,7 +370,7 @@ async function populateFilterOptions() {
     });
     enhanceSelect('fZone');
 
-    document.getElementById('kpiEmployees').textContent = (emp.employees || []).length;
+    document.getElementById('kpiEmployees').textContent = employeesCache.length;
     document.getElementById('kpiZones').textContent = (zones.Zone || []).length;
   } catch (e) { console.error(e); }
 }
@@ -363,6 +382,21 @@ async function loadKpisAndCheckins() {
     document.getElementById('kpiCheckins').textContent = (checkins.checkins || []).length;
   } catch (e) {
     document.getElementById('kpiCheckins').textContent = '—';
+  }
+
+  try {
+    const monthCheckins = await api('/events', {
+      event_type: 'checkin',
+      date_from: monthStartStr(),
+      date_to: todayStr(),
+    });
+    const attended = new Set((monthCheckins.events || [])
+      .map(e => e.employee_id)
+      .filter(id => id != null));
+    const pct = employeesCache.length ? Math.round((attended.size / employeesCache.length) * 100) : null;
+    document.getElementById('kpiMonthlyAttendance').textContent = pct == null ? '—' : pct + '%';
+  } catch (e) {
+    document.getElementById('kpiMonthlyAttendance').textContent = '—';
   }
 }
 
@@ -447,6 +481,12 @@ function productivityClass(pct) {
   return 'low';
 }
 
+function isAllocatedPresence(e) {
+  if (e.event_type !== 'presence' || e.employee_id == null || !e.zone) return false;
+  const assignedZones = employeeZoneMap.get(String(e.employee_id));
+  return assignedZones instanceof Set && assignedZones.has(e.zone);
+}
+
 async function loadEventTypeAndProductivity(filters) {
   // /events (not /reports/summary) is used here because event_type isn't
   // a valid group_by dimension on the reports endpoint — raw events give
@@ -460,6 +500,9 @@ async function loadEventTypeAndProductivity(filters) {
   const typeCounts = {};
   const typeDurationS = {};
   let totalDurationS = 0;
+  let presenceS = 0;
+  let allocatedPresenceS = 0;
+  let unallocatedPresenceS = 0;
   const perEmployee = {};
 
   events.forEach(e => {
@@ -476,19 +519,29 @@ async function loadEventTypeAndProductivity(filters) {
     const bucket = perEmployee[key];
     if (t === 'working') bucket.working += dur;
     else if (t === 'phone_use') bucket.phone += dur;
-    else if (t === 'presence') bucket.presence += dur;
+    else if (t === 'presence') {
+      bucket.presence += dur;
+      presenceS += dur;
+      if (isAllocatedPresence(e)) allocatedPresenceS += dur;
+      else unallocatedPresenceS += dur;
+    }
     else if (t === 'interaction') bucket.interaction += 1;
   });
 
   // KPIs
   const workingS = typeDurationS.working || 0;
   const phoneS = typeDurationS.phone_use || 0;
+  const interactionS = typeDurationS.interaction || 0;
+  const nonWorkS = phoneS + interactionS + unallocatedPresenceS;
   const productivityPct = (workingS + phoneS) > 0 ? Math.round((workingS / (workingS + phoneS)) * 100) : 0;
   const phoneSharePct = totalDurationS > 0 ? Math.round((phoneS / totalDurationS) * 100) : 0;
+  const allocatedPresencePct = presenceS > 0 ? Math.round((allocatedPresenceS / presenceS) * 100) : null;
   const avgDuration = events.length ? (totalDurationS / events.length) : 0;
 
   document.getElementById('kpiProductivity').textContent = (workingS + phoneS) > 0 ? productivityPct + '%' : '—';
   document.getElementById('kpiPhoneShare').textContent = totalDurationS > 0 ? phoneSharePct + '%' : '—';
+  document.getElementById('kpiAllocatedPresence').textContent = allocatedPresencePct == null ? '—' : allocatedPresencePct + '%';
+  document.getElementById('kpiNonWorkTime').textContent = events.length ? (nonWorkS / 60).toFixed(1) : '—';
   document.getElementById('kpiAvgDuration').textContent = events.length ? avgDuration.toFixed(1) : '—';
   document.getElementById('kpiTrackedHours').textContent = (totalDurationS / 3600).toFixed(1);
 
