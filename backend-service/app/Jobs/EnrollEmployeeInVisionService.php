@@ -10,6 +10,7 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 
 /**
  * Registers (or re-registers) an employee's face in the vision service's
@@ -41,8 +42,34 @@ class EnrollEmployeeInVisionService implements ShouldQueue
         }
 
         $baseUrl = rtrim(config('app.internal_url'), '/') . '/storage/';
-        $faceUrls = $employee->faceImages()->pluck('path')->map(fn ($path) => $baseUrl . $path)->all();
-        $bodyUrls = $employee->bodyImages()->pluck('path')->map(fn ($path) => $baseUrl . $path)->all();
+
+        // Only send photos whose file is still on disk. employee_photos rows
+        // outlive their files: uploads used to live in the container's
+        // writable layer, so every `docker compose --build` wiped them while
+        // the DB rows survived in the mysql volume (this is why the
+        // hr-storage named volume exists — see docker-compose.yml). Sending a
+        // URL for a missing file made vision-service's /enroll retry it five
+        // times and then fail the request with a 403, so ONE stale row
+        // aborted the whole employee's enrollment — including the photos
+        // that were perfectly fine.
+        $resolve = function ($relation) use ($baseUrl, $employee) {
+            $urls = [];
+            foreach ($relation->pluck('path') as $path) {
+                if (Storage::disk('public')->exists($path)) {
+                    $urls[] = $baseUrl . $path;
+                    continue;
+                }
+                Log::warning('Skipping enrollment photo whose file is missing', [
+                    'employee_id' => $employee->id,
+                    'job_num' => $employee->job_num,
+                    'path' => $path,
+                ]);
+            }
+            return $urls;
+        };
+
+        $faceUrls = $resolve($employee->faceImages());
+        $bodyUrls = $resolve($employee->bodyImages());
 
         // Backward compatible fallback: employees enrolled before multi-photo
         // support (or who only ever had the single profile photo) have no

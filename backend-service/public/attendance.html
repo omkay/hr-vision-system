@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>الدوام اليومي — نيوبارك</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Almarai:wght@400;700;800&display=swap" rel="stylesheet">
+<!-- Flatpickr for the date/time fields: native <input type=date|time> doesn't
+     render inside the Flutter desktop webview these pages are embedded in.
+     Same choice as dashboard.html / events.html / videos.html. -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+<script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+<script src="https://npmcdn.com/flatpickr/dist/l10n/ar.js"></script>
+<style>
+  :root {
+    --np-dark-blue: #0054A6;
+    --np-light-blue: #00BFF3;
+    --np-red: #ED1C24;
+    --np-bg: #F8FAFC;
+    --card: #ffffff;
+    --border: #E2E8F0;
+    --text: #1E293B;
+    --muted: #64748B;
+    --ok: #16A34A;
+    --warn: #D97706;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--np-bg); color: var(--text); font-family: 'Almarai', sans-serif; font-size: 14px; }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 22px 18px 60px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 18px 20px; box-shadow: 0 1px 3px rgba(15,23,42,.04); }
+  .card h2 { font-size: 14px; font-weight: 800; color: var(--np-dark-blue); margin: 0 0 14px; }
+  .muted { color: var(--muted); font-size: 12px; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  button { font-family: inherit; font-size: 13px; padding: 8px 14px; border-radius: 9px; border: 1px solid var(--np-dark-blue); background: var(--np-dark-blue); color: #fff; cursor: pointer; }
+  button.ghost { background: #fff; color: var(--np-dark-blue); }
+  button.danger { background: #fff; color: var(--np-red); border-color: var(--np-red); }
+  button.small { padding: 5px 10px; font-size: 12px; }
+  button:disabled { opacity: .55; cursor: default; }
+  input, select { font-family: inherit; font-size: 13px; padding: 8px 10px; border-radius: 9px; border: 1px solid var(--border); background: #fff; color: var(--text); }
+  .kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin: 18px 0 22px; }
+  @media (max-width: 900px) { .kpi-grid { grid-template-columns: repeat(2, 1fr); } }
+  .kpi { display: flex; align-items: center; gap: 14px; }
+  .kpi .icon { width: 44px; height: 44px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 19px; flex-shrink: 0; }
+  .kpi .icon.green { background: #E7F8EE; color: var(--ok); }
+  .kpi .icon.red { background: #FDECEC; color: var(--np-red); }
+  .kpi .icon.blue { background: #E6F0FA; color: var(--np-dark-blue); }
+  .kpi .icon.warn { background: #FEF3C7; color: var(--warn); }
+  .kpi .value { font-size: 23px; font-weight: 800; line-height: 1.1; }
+  .kpi .label { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: right; padding: 10px 8px; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: middle; }
+  th { font-size: 12px; color: var(--muted); font-weight: 700; }
+  tr:last-child td { border-bottom: 0; }
+  .tag { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid transparent; white-space: nowrap; }
+  .tag.face { background: #E7F8EE; color: #15803D; }
+  .tag.reid { background: #E6F0FA; color: #1D4ED8; }
+  .tag.manual { background: #FEF3C7; color: #92400E; }
+  .tag.derived { background: #F1F5F9; color: #475569; }
+  .empty, .loading { text-align: center; color: var(--muted); padding: 18px; }
+  .conn-warning { display: none; background: #FEF2F2; border: 1px solid #FECACA; color: #991B1B; padding: 10px 14px; border-radius: 10px; margin-bottom: 16px; font-size: 13px; }
+  .conn-warning.show { display: block; }
+  .toast { position: fixed; inset-inline-start: 50%; transform: translateX(-50%); bottom: 24px; background: #0F172A; color: #fff; padding: 10px 18px; border-radius: 10px; font-size: 13px; opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 50; }
+  .toast.show { opacity: 1; }
+  .toast.err { background: var(--np-red); }
+  .section-title { font-size: 15px; font-weight: 800; color: var(--np-dark-blue); margin: 26px 0 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="conn-warning" id="connWarning">تعذر الاتصال بالخادم أو انتهت صلاحية الجلسة — تأكد من تمرير رمز الدخول (token) عبر رابط الصفحة.</div>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <div class="row">
+        <label class="muted" for="fDate">التاريخ</label>
+        <input id="fDate" style="width:150px" placeholder="YYYY-MM-DD">
+        <button class="ghost" onclick="load()">تحديث</button>
+      </div>
+      <div class="row">
+        <button class="ghost" id="finalizeBtn" onclick="finalize()">احتساب الخروج للغائبين عنه</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="kpi-grid">
+    <div class="card kpi"><div class="icon green">✔</div><div><div class="value" id="kPresent">—</div><div class="label">مداومون</div></div></div>
+    <div class="card kpi"><div class="icon red">✖</div><div><div class="value" id="kAbsent">—</div><div class="label">غير مداومين</div></div></div>
+    <div class="card kpi"><div class="icon warn">✍</div><div><div class="value" id="kManual">—</div><div class="label">سجلات يدوية</div></div></div>
+    <div class="card kpi"><div class="icon blue">⏳</div><div><div class="value" id="kNoCheckout">—</div><div class="label">بلا تسجيل خروج</div></div></div>
+  </div>
+
+  <div class="section-title">المداومون</div>
+  <div class="card">
+    <div style="overflow-x:auto">
+      <table>
+        <thead>
+          <tr>
+            <th>الموظف</th>
+            <th>الرقم الوظيفي</th>
+            <th>الحضور</th>
+            <th>الخروج</th>
+            <th>آخر ظهور</th>
+            <th>المدة (د)</th>
+            <th>إجراءات</th>
+          </tr>
+        </thead>
+        <tbody id="presentBody"><tr><td colspan="7" class="loading">جارٍ التحميل…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section-title">غير المداومين</div>
+  <div class="card">
+    <div style="overflow-x:auto">
+      <table>
+        <thead>
+          <tr>
+            <th>الموظف</th>
+            <th>الرقم الوظيفي</th>
+            <th>الإدارة</th>
+            <th>تسجيل حضور يدوي</th>
+          </tr>
+        </thead>
+        <tbody id="absentBody"><tr><td colspan="4" class="loading">جارٍ التحميل…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ---------------------------------------------------------------------
+   Same embedded-page connection layer as dashboard.html: config comes from
+   the iframe URL (?base_url=...&token=...) and is cached in localStorage, so
+   there is no login form here — the host app owns the session.
+   --------------------------------------------------------------------- */
+const LS_BASE = 'hrvision_baseUrl';
+const LS_TOKEN = 'hrvision_token';
+const qs = new URLSearchParams(location.search);
+if (qs.get('base_url')) localStorage.setItem(LS_BASE, qs.get('base_url'));
+if (qs.get('token')) localStorage.setItem(LS_TOKEN, qs.get('token'));
+
+function baseUrl() { return (localStorage.getItem(LS_BASE) || (location.origin + '/api')).replace(/\/$/, ''); }
+function token() { return localStorage.getItem(LS_TOKEN) || null; }
+function authHeaders(extra = {}) {
+  const h = { 'Accept': 'application/json', ...extra };
+  if (token()) h['Authorization'] = 'Bearer ' + token();
+  return h;
+}
+function showConnWarning() { document.getElementById('connWarning').classList.add('show'); }
+
+async function api(path, params = null) {
+  let url = baseUrl() + path;
+  if (params) {
+    const q = new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([, v]) => v !== '' && v != null)));
+    if (q.toString()) url += '?' + q.toString();
+  }
+  const res = await fetch(url, { headers: authHeaders() });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401) showConnWarning();
+  if (!res.ok) { const e = new Error(data.message || ('HTTP ' + res.status)); e.data = data; throw e; }
+  return data;
+}
+
+async function apiSend(method, path, body) {
+  const res = await fetch(baseUrl() + path, {
+    method,
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: body ? JSON.stringify(body) : null,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401) showConnWarning();
+  if (!res.ok) { const e = new Error(data.message || ('HTTP ' + res.status)); e.data = data; throw e; }
+  return data;
+}
+
+let toastTimer = null;
+function toast(msg, isError = false) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'toast show' + (isError ? ' err' : '');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.className = 'toast'; }, 3200);
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+/* Times are rendered in the browser's locale rather than raw ISO — HR reads
+   these at a glance and the date part is already fixed by the page filter. */
+function hhmm(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return isNaN(d) ? '—' : d.toLocaleTimeString('ar-SY', { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+/* How a recorded time came to exist, which is the difference between "the
+   cameras saw this" and "someone typed it". Worth surfacing on every row:
+   an auditor asking why a payroll figure looks wrong starts here. */
+function methodTag(entry) {
+  if (!entry) return '';
+  if (entry.is_manual) return '<span class="tag manual">يدوي</span>';
+  if (entry.is_derived) return '<span class="tag derived">محتسب</span>';
+  if (entry.method === 'face') return '<span class="tag face">وجه</span>';
+  if (entry.method === 'reid') return '<span class="tag reid">جسد</span>';
+  return '';
+}
+
+function selectedDate() { return document.getElementById('fDate').value || null; }
+
+/* A time-only field would be ambiguous for a past date, so manual entries are
+   submitted as "<selected date> <entered time>". Leaving the field blank means
+   "now", which is the right default for someone standing at the desk. */
+function timeToIso(dateStr, timeStr) {
+  if (!timeStr) return null;
+  const day = dateStr || new Date().toISOString().slice(0, 10);
+  return `${day} ${timeStr}:00`;
+}
+
+let DATA = null;
+
+async function load() {
+  const body = document.getElementById('presentBody');
+  body.innerHTML = '<tr><td colspan="7" class="loading">جارٍ التحميل…</td></tr>';
+  try {
+    DATA = await api('/attendance', { date: selectedDate() });
+  } catch (e) {
+    body.innerHTML = `<tr><td colspan="7" class="empty">${esc(e.message)}</td></tr>`;
+    return;
+  }
+  render();
+}
+
+function render() {
+  const present = DATA.present || [];
+  const absent = DATA.absent || [];
+
+  const manualCount = present.filter(p => p.checkin?.is_manual || p.checkout?.is_manual).length;
+  const noCheckout = present.filter(p => !p.checkout).length;
+  document.getElementById('kPresent').textContent = DATA.present_count;
+  document.getElementById('kAbsent').textContent = DATA.absent_count;
+  document.getElementById('kManual').textContent = manualCount;
+  document.getElementById('kNoCheckout').textContent = noCheckout;
+
+  const pBody = document.getElementById('presentBody');
+  pBody.innerHTML = present.length ? present.map(p => `
+    <tr>
+      <td>${esc(p.name)}</td>
+      <td>${esc(p.job_num)}</td>
+      <td>${hhmm(p.checkin?.at)} ${methodTag(p.checkin)}</td>
+      <td>${p.checkout ? `${hhmm(p.checkout.at)} ${methodTag(p.checkout)}` : '<span class="muted">—</span>'}</td>
+      <td>${hhmm(p.last_seen_at)}</td>
+      <td>${p.worked_minutes == null ? '<span class="muted">—</span>' : p.worked_minutes}</td>
+      <td>
+        <div class="row">
+          ${p.checkout ? '' : `
+            <input id="out-t-${p.employee_id}" style="width:90px" placeholder="HH:MM">
+            <button class="small ghost" onclick="manual('checkout', ${p.employee_id})">تسجيل خروج</button>`}
+          ${p.checkin ? `<button class="small danger" onclick="removeEvent(${p.checkin.event_id}, '${esc(p.name)}')">حذف الحضور</button>` : ''}
+          ${p.checkout ? `<button class="small danger" onclick="removeEvent(${p.checkout.event_id}, '${esc(p.name)}')">حذف الخروج</button>` : ''}
+        </div>
+      </td>
+    </tr>`).join('') : '<tr><td colspan="7" class="empty">لا يوجد مداومون في هذا التاريخ</td></tr>';
+
+  const aBody = document.getElementById('absentBody');
+  aBody.innerHTML = absent.length ? absent.map(a => `
+    <tr>
+      <td>${esc(a.name)}</td>
+      <td>${esc(a.job_num)}</td>
+      <td>${esc(a.administration || '—')}</td>
+      <td>
+        <div class="row">
+          <input id="in-t-${a.employee_id}" style="width:90px" placeholder="HH:MM">
+          <button class="small" onclick="manual('checkin', ${a.employee_id})">تسجيل حضور</button>
+        </div>
+      </td>
+    </tr>`).join('') : '<tr><td colspan="4" class="empty">جميع الموظفين مداومون</td></tr>';
+
+  // Time pickers are attached after each render because the rows they belong
+  // to are recreated every time.
+  document.querySelectorAll('input[id^="in-t-"], input[id^="out-t-"]').forEach(el => {
+    flatpickr(el, { enableTime: true, noCalendar: true, dateFormat: 'H:i', time_24hr: true, allowInput: true });
+  });
+}
+
+async function manual(type, employeeId) {
+  const field = document.getElementById((type === 'checkin' ? 'in-t-' : 'out-t-') + employeeId);
+  const at = timeToIso(selectedDate(), field?.value);
+  try {
+    const res = await apiSend('POST', '/attendance/' + type, { employee_id: employeeId, at });
+    toast(res.message || 'تم');
+    await load();
+  } catch (e) {
+    // 409 carries the conflicting row, which is more useful than "failed".
+    const existing = e.data?.existing_at ? ` (مسجَّل ${hhmm(e.data.existing_at)})` : '';
+    toast(e.message + existing, true);
+  }
+}
+
+async function removeEvent(eventId, name) {
+  if (!confirm(`حذف هذا السجل للموظف ${name}؟ لا يمكن التراجع.`)) return;
+  try {
+    const res = await apiSend('DELETE', '/attendance/event/' + eventId);
+    const extra = (res.also_deleted_checkout_ids || []).length ? ' (وحُذف تسجيل الخروج التابع له)' : '';
+    toast((res.message || 'تم الحذف') + extra);
+    await load();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+async function finalize() {
+  const btn = document.getElementById('finalizeBtn');
+  btn.disabled = true;
+  try {
+    const res = await apiSend('POST', '/attendance/finalize', { date: selectedDate() });
+    let msg = `تم احتساب ${res.created} تسجيل خروج`;
+    if (res.skipped_no_sighting) msg += ` — ${res.skipped_no_sighting} موظف بلا ظهور على الكاميرات`;
+    toast(msg);
+    await load();
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function init() {
+  const today = new Date().toISOString().slice(0, 10);
+  const dateEl = document.getElementById('fDate');
+  dateEl.value = today;
+  flatpickr(dateEl, { dateFormat: 'Y-m-d', locale: 'ar', allowInput: true, onChange: load });
+  if (!token()) showConnWarning();
+  load();
+}
+
+init();
+</script>
+</body>
+</html>

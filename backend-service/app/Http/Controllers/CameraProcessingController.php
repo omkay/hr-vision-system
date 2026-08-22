@@ -43,6 +43,7 @@ class CameraProcessingController extends Controller
         ?string $sessionDate = null,
         bool $writeVideo = false,
         ?int $annotateStride = null,
+        ?bool $debugIdentity = null,
     ): array {
         $baseUrl = rtrim(config('app.internal_url'), '/') . '/storage/';
 
@@ -73,6 +74,11 @@ class CameraProcessingController extends Controller
             // ones (the pipeline stops at end-of-video regardless).
             'max_frames' => 6000,
             'write_video' => $writeVideo,
+            // Per-frame identity decision log, on by default — see
+            // config/services.php 'debug_identity'. Sent explicitly on every
+            // run so that whichever UI triggered it (dashboard.html or any
+            // test-ui.html), the CSV lands in vision-service's outputs/.
+            'debug_identity' => $debugIdentity ?? (bool) config('services.vision.debug_identity'),
         ];
 
         if ($sessionDate !== null) {
@@ -100,7 +106,16 @@ class CameraProcessingController extends Controller
             ], 422);
         }
 
-        $payload = $this->buildEventsPayload($cameras, $sessionDate, $writeVideo, $annotateStride);
+        // Only treat debug_identity as overridden when the caller actually
+        // sent it; otherwise null lets the config default apply, instead of
+        // an absent field silently reading as false.
+        $debugIdentity = $request->has('debug_identity')
+            ? $request->boolean('debug_identity')
+            : null;
+
+        $payload = $this->buildEventsPayload(
+            $cameras, $sessionDate, $writeVideo, $annotateStride, $debugIdentity,
+        );
         $visionUrl = rtrim(config('services.vision.url'), '/') . '/events/run';
 
         try {
@@ -171,6 +186,7 @@ class CameraProcessingController extends Controller
             'session_date' => 'nullable|date',
             'write_video' => 'nullable|boolean',
             'annotate_stride' => 'nullable|integer|min:1',
+            'debug_identity' => 'nullable|boolean',
         ]);
 
         $camera = Camera::with('zone')->findOrFail($id);
@@ -326,6 +342,7 @@ class CameraProcessingController extends Controller
             'session_date' => 'nullable|date',
             'write_video' => 'nullable|boolean',
             'annotate_stride' => 'nullable|integer|min:1',
+            'debug_identity' => 'nullable|boolean',
         ]);
 
         $cameras = Camera::with('zone')->whereIn('id', $request->camera_ids)->get();
@@ -342,15 +359,17 @@ class CameraProcessingController extends Controller
     #[OA\Post(
         path: '/process-sequence',
         summary: "Process a day's video sequence: checkin first, then zone cameras",
-        description: "Orchestrates the full daily flow in one call: runs the checkin video "
+        description: "Orchestrates the full daily flow in one call: runs the checkin video(s) "
             . 'through face/ReID identification — which also seeds that day\'s body-fingerprint '
             . 'gallery in vision-service — then submits the given zone cameras for /events/run '
             . 'processing using that same session_date, so cross-camera ReID matching prefers '
             . "today's fresh appearance over the static enrollment gallery. See daily_gallery.py "
-            . '/ IdentityFuser.match_reid in vision-service. The checkin video can be supplied '
-            . 'either as a fresh upload (`checkin_video`) or by pointing at an already-stored '
-            . 'camera (`checkin_camera_id`) — e.g. a persistent "Checkin Camera" added the same '
-            . 'way as any other zone camera — so it doesn\'t need to be re-uploaded every call.',
+            . '/ IdentityFuser.match_reid in vision-service. The checkin step can be supplied '
+            . 'explicitly — either a fresh upload (`checkin_video`) or one or more already-stored '
+            . 'cameras (`checkin_camera_id`, scalar or array) — or omitted entirely, in which case '
+            . 'every camera flagged `is_checkin=true` is used automatically (all of them, if '
+            . 'several entrances are flagged), so the caller never has to remember which camera(s) '
+            . 'are the checkin point(s).',
         tags: ['Processing'],
         security: [['bearerAuth' => []]],
         requestBody: new OA\RequestBody(
@@ -358,8 +377,8 @@ class CameraProcessingController extends Controller
             content: new OA\MediaType(
                 mediaType: 'multipart/form-data',
                 schema: new OA\Schema(required: ['camera_ids'], properties: [
-                    new OA\Property(property: 'checkin_video', type: 'string', format: 'binary', description: 'mp4/mov/avi/mkv, up to 500MB. Required unless checkin_camera_id is given.'),
-                    new OA\Property(property: 'checkin_camera_id', type: 'integer', description: 'Use an already-stored camera\'s video for the checkin step instead of uploading one. Required unless checkin_video is given.'),
+                    new OA\Property(property: 'checkin_video', type: 'string', format: 'binary', description: 'mp4/mov/avi/mkv, up to 500MB. Optional — omit to auto-use every camera flagged is_checkin=true.'),
+                    new OA\Property(property: 'checkin_camera_id', description: 'One camera id, or an array of camera ids, to use for the checkin step instead of uploading a video. Optional — omit to auto-use every camera flagged is_checkin=true.'),
                     new OA\Property(property: 'camera_ids', type: 'array', items: new OA\Items(type: 'integer'), example: [1, 2, 3]),
                     new OA\Property(property: 'write_video', type: 'boolean', description: 'Generate an annotated debug video per zone camera (boxes/zones/labels drawn in) — see `annotated_videos` once GET /vision-jobs/{id} reports done.'),
                     new OA\Property(property: 'annotate_stride', type: 'integer', description: 'Only relevant when write_video=true — write 1 out of every N processed frames to keep the file small. Defaults to 5.'),
@@ -368,26 +387,50 @@ class CameraProcessingController extends Controller
         ),
         responses: [
             new OA\Response(response: 202, description: 'Checkin processed and zone job submitted — see `checkin` and `job` in the response.'),
-            new OA\Response(response: 422, description: 'No employee recognized in the checkin video, or invalid camera_ids.'),
+            new OA\Response(response: 422, description: 'No employee recognized in any checkin video, invalid camera_ids, or no checkin_video/checkin_camera_id given and no camera is flagged is_checkin.'),
             new OA\Response(response: 502, description: 'Could not reach the vision service.'),
         ],
     )]
     public function processSequence(Request $request)
     {
         $request->validate([
-            'checkin_video' => 'required_without:checkin_camera_id|nullable|file|mimes:mp4,mov,avi,mkv|max:512000',
-            'checkin_camera_id' => 'required_without:checkin_video|nullable|integer|exists:cameras,id',
+            'checkin_video' => 'nullable|file|mimes:mp4,mov,avi,mkv|max:512000',
+            'checkin_camera_id' => 'nullable',
+            'checkin_camera_id.*' => 'integer|exists:cameras,id',
             'camera_ids' => 'required|array|min:1',
             'camera_ids.*' => 'exists:cameras,id',
             'write_video' => 'nullable|boolean',
             'annotate_stride' => 'nullable|integer|min:1',
+            'debug_identity' => 'nullable|boolean',
         ]);
 
-        if ($request->filled('checkin_camera_id')) {
-            $checkinCamera = Camera::findOrFail($request->input('checkin_camera_id'));
-            $checkinResult = $this->checkinService->identifyAndRecordCheckinsFromCamera($checkinCamera);
-        } else {
+        // checkin_camera_id may arrive as a single id or an array of ids
+        // (multiple entrances) — normalize to an array either way so the
+        // rest of this method doesn't need two code paths.
+        if ($request->filled('checkin_camera_id') && ! is_array($request->input('checkin_camera_id'))) {
+            $request->validate(['checkin_camera_id' => 'integer|exists:cameras,id']);
+        }
+
+        if ($request->hasFile('checkin_video')) {
             $checkinResult = $this->checkinService->identifyAndRecordCheckins($request->file('checkin_video'));
+        } elseif ($request->filled('checkin_camera_id')) {
+            $checkinCameraIds = (array) $request->input('checkin_camera_id');
+            $checkinCameras = Camera::whereIn('id', $checkinCameraIds)->get();
+            $checkinResult = $this->checkinService->identifyAndRecordCheckinsFromCameras($checkinCameras);
+        } else {
+            // Nothing given explicitly — fall back to every camera flagged
+            // as a checkin camera, so this endpoint can be called the same
+            // way every day without the caller having to know/remember
+            // which camera id(s) are the entrance(s).
+            $checkinCameras = Camera::where('is_checkin', true)->get();
+
+            if ($checkinCameras->isEmpty()) {
+                return response()->json([
+                    'message' => 'لم يتم تمرير checkin_video أو checkin_camera_id، ولا توجد كاميرا محددة كـ"تسجيل دخول". حدد كاميرا واحدة على الأقل بخاصية is_checkin أو مرر أحد الحقلين صراحة.',
+                ], 422);
+            }
+
+            $checkinResult = $this->checkinService->identifyAndRecordCheckinsFromCameras($checkinCameras);
         }
 
         if (! $checkinResult['ok']) {
@@ -410,6 +453,12 @@ class CameraProcessingController extends Controller
         // rather than dropping it, since both halves matter to this caller.
         $jobData = $jobResponse->getData(true);
         $jobData['checkin'] = $checkinResult['body'];
+        // Surfaced separately from the body so a caller can tell "checkin ran
+        // and recognised nobody" (zone cameras still processed, identities
+        // there will be UNKNOWN or fall back to the enrollment gallery) apart
+        // from "checkin recognised people". Previously the first case aborted
+        // this endpoint with a 422 and no zone job at all.
+        $jobData['checkin']['recognized'] = $checkinResult['recognized'] ?? true;
 
         return response()->json($jobData, $jobResponse->getStatusCode());
     }
@@ -422,7 +471,7 @@ class CameraProcessingController extends Controller
         parameters: [
             new OA\Parameter(name: 'id', in: 'path', required: true, description: 'Camera ID.', schema: new OA\Schema(type: 'integer')),
             new OA\Parameter(name: 'employee_id', in: 'query', required: false, schema: new OA\Schema(type: 'integer')),
-            new OA\Parameter(name: 'event_type', in: 'query', required: false, schema: new OA\Schema(type: 'string', enum: ['presence', 'working', 'phone_use', 'interaction', 'checkin'])),
+            new OA\Parameter(name: 'event_type', in: 'query', required: false, schema: new OA\Schema(type: 'string', enum: ['presence', 'working', 'phone_use', 'interaction', 'checkin', 'checkout'])),
             new OA\Parameter(name: 'zone', in: 'query', required: false, schema: new OA\Schema(type: 'string')),
             new OA\Parameter(name: 'date', in: 'query', required: false, schema: new OA\Schema(type: 'string', format: 'date')),
         ],
@@ -484,7 +533,7 @@ class CameraProcessingController extends Controller
         parameters: [
             new OA\Parameter(name: 'camera_id', in: 'query', required: false, schema: new OA\Schema(type: 'integer')),
             new OA\Parameter(name: 'employee_id', in: 'query', required: false, schema: new OA\Schema(type: 'integer')),
-            new OA\Parameter(name: 'event_type', in: 'query', required: false, schema: new OA\Schema(type: 'string', enum: ['presence', 'working', 'phone_use', 'interaction', 'checkin'])),
+            new OA\Parameter(name: 'event_type', in: 'query', required: false, schema: new OA\Schema(type: 'string', enum: ['presence', 'working', 'phone_use', 'interaction', 'checkin', 'checkout'])),
             new OA\Parameter(name: 'zone', in: 'query', required: false, schema: new OA\Schema(type: 'string')),
             new OA\Parameter(name: 'date', in: 'query', required: false, description: 'Exact day. Ignored if date_from/date_to are given.', schema: new OA\Schema(type: 'string', format: 'date')),
             new OA\Parameter(name: 'date_from', in: 'query', required: false, description: 'Range start (inclusive). Lets callers (e.g. the dashboard) aggregate over more than one day.', schema: new OA\Schema(type: 'string', format: 'date')),

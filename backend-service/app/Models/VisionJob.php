@@ -11,6 +11,7 @@ class VisionJob extends Model
         'status',
         'requested_by',
         'raw_result',
+        'events_persisted_count',
         'error_message',
         'finished_at',
     ];

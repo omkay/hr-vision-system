@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Jobs\EnrollEmployeeInVisionService;
 use App\Models\Employee;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
@@ -226,11 +227,73 @@ class EmployeeController extends Controller
             Storage::disk('public')->delete($employee->image);
         }
 
+        // Delete the employee's identity data in vision-service too, keyed by
+        // job_num (which is what the gallery folders / embeddings are named
+        // after — see EmployeePhotoController's enroll calls).
+        //
+        // This is not just tidiness. vision-service keeps a per-DAY body
+        // fingerprint for each employee (gallery/daily/<date>.npz) and
+        // prefers it over the static enrollment bank when matching bodies on
+        // zone cameras. Leaving it behind means a deleted employee stays in
+        // the matching pool: their fingerprint keeps winning ReID matches and
+        // activity events get attributed to a job_num that no longer resolves
+        // to anyone — and worse, it competes with the employees who ARE still
+        // enrolled, since one identity can only be assigned to one track per
+        // frame.
+        //
+        // Deliberately does NOT block the delete on success: vision-service
+        // being down shouldn't prevent HR from removing an employee. Failures
+        // are logged for follow-up, and the DELETE is idempotent so it can
+        // safely be retried later.
+        $visionDeleted = $this->deleteVisionEnrollment($employee->job_num);
+
         $employee->delete();
 
         return response()->json([
-            'message' => 'تم حذف الموظف بنجاح'
+            'message' => 'تم حذف الموظف بنجاح',
+            'vision_enrollment_deleted' => $visionDeleted,
         ], 200);
+    }
+
+    /**
+     * Best-effort DELETE /enroll/{job_num} against vision-service.
+     * Returns whether the call succeeded, for the response/logs.
+     */
+    private function deleteVisionEnrollment(?string $jobNum): bool
+    {
+        if (empty($jobNum)) {
+            return false;
+        }
+
+        $visionUrl = rtrim(config('services.vision.url'), '/') . '/enroll/' . rawurlencode($jobNum);
+
+        try {
+            $response = Http::timeout(30)->delete($visionUrl);
+        } catch (\Throwable $e) {
+            Log::error('Failed to delete vision enrollment', [
+                'job_num' => $jobNum,
+                'error' => $e->getMessage(),
+            ]);
+
+            return false;
+        }
+
+        if ($response->failed()) {
+            Log::warning('vision-service enrollment delete returned an error', [
+                'job_num' => $jobNum,
+                'status' => $response->status(),
+                'body' => $response->body(),
+            ]);
+
+            return false;
+        }
+
+        Log::info('Deleted vision enrollment', [
+            'job_num' => $jobNum,
+            'result' => $response->json(),
+        ]);
+
+        return true;
     }
 
     #[OA\Get(

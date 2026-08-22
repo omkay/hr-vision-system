@@ -5,6 +5,7 @@ namespace App\Jobs;
 use App\Models\ActivityEvent;
 use App\Models\Employee;
 use App\Models\VisionJob;
+use App\Services\AttendanceService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -14,28 +15,41 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Polls GET /events/{job_id} until the vision service reports done or error,
- * then persists the results — its job store is in-memory only, so this is
- * the only copy of the results that survives a vision-service restart.
- * See INTEGRATION-TODO-multi-photo-enrollment.md section 3.
+ * Polls GET /events/{job_id} until the vision service reports done or error.
+ * Its job store is in-memory only, so this is the only copy of the results
+ * that survives a vision-service restart. See
+ * INTEGRATION-TODO-multi-photo-enrollment.md section 3.
  *
  * Chosen over a webhook callback so nothing new has to call into
  * Hr_SmartPay from outside — this reuses the same queue worker enrollment
- * already relies on. Retries on a backoff since /events/run can take
- * anywhere from seconds to many minutes depending on video length.
+ * already relies on.
+ *
+ * Events are persisted incrementally on every poll (not just once the job
+ * finishes) — vision-service's `partial_events` grows live as EventEngine
+ * finalizes each event mid-video (see events_engine.py's on_event callback),
+ * so dashboard.html/events.html start showing activity for a long-running
+ * job well before it's done, instead of only once the whole video sequence
+ * completes. `events_persisted_count` is a cursor into that list so each
+ * poll only inserts the tail it hasn't seen yet.
  */
 class PollVisionEventsJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    public int $tries = 30;
-
-    // Laravel reuses the last value for any attempt beyond the array length,
-    // so this settles into a 2-minute poll interval for long-running jobs.
-    public array $backoff = [10, 20, 30, 60, 120];
+    // Time-boxed rather than try-count-boxed: a fixed, short backoff would
+    // need an impractically large $tries to cover a long multi-camera
+    // sequence, so this caps on wall-clock time instead and gives up after
+    // 2 hours of a job never reaching done/error.
+    public int $tries = 2000;
+    public int $backoff = 15;
 
     public function __construct(public int $visionJobId)
     {
+    }
+
+    public function retryUntil(): \DateTime
+    {
+        return now()->addHours(2);
     }
 
     public function handle(): void
@@ -63,8 +77,33 @@ class PollVisionEventsJob implements ShouldQueue
         $body = $response->json();
         $status = $body['status'] ?? null;
 
+        // Persist newly-finalized events on every poll, regardless of
+        // status — including 'running', which is the whole point: activity
+        // shows up while the job is still going, not just once it's done.
+        $this->persistNewPartialEvents($visionJob, $body['partial_events'] ?? []);
+
         if ($status === 'done') {
-            $this->persistResults($visionJob, $body['result'] ?? []);
+            $visionJob->update([
+                'status' => 'done',
+                'raw_result' => json_encode($body['result'] ?? []),
+                'finished_at' => now(),
+            ]);
+
+            // Derive checkouts now that every sighting for the day is
+            // persisted — a checkout is (last sighting + grace), so it can
+            // only be computed once there are no more sightings coming.
+            // Idempotent, and never overwrites a manual checkout, so a
+            // second job on the same day is harmless. Failure here must not
+            // fail the job: the events are already saved, and HR can
+            // re-derive from the attendance screen.
+            try {
+                app(AttendanceService::class)->deriveCheckouts(now()->toDateString());
+            } catch (\Throwable $e) {
+                Log::warning('Checkout derivation failed after job completion', [
+                    'vision_job_id' => $visionJob->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
             return;
         }
 
@@ -82,11 +121,27 @@ class PollVisionEventsJob implements ShouldQueue
         throw new \RuntimeException("Vision job {$visionJob->vision_job_id} still {$status}, retrying");
     }
 
-    private function persistResults(VisionJob $visionJob, array $result): void
+    /**
+     * Persists ActivityEvent rows for every entry in $partialEvents past
+     * the `events_persisted_count` cursor. Safe to call on every poll:
+     * vision-service's partial_events list is append-only (see jobs.py's
+     * Job.partial_events), so the same prefix is never re-sent, and by the
+     * time status flips to 'done' this list already equals result.events
+     * in content — so nothing further needs to be (or should be) persisted
+     * from `result` itself.
+     */
+    private function persistNewPartialEvents(VisionJob $visionJob, array $partialEvents): void
     {
+        $alreadyPersisted = $visionJob->events_persisted_count;
+        $newEvents = array_slice($partialEvents, $alreadyPersisted);
+
+        if (empty($newEvents)) {
+            return;
+        }
+
         $cameraIds = $visionJob->cameras()->pluck('cameras.id')->all();
 
-        foreach (($result['events'] ?? []) as $event) {
+        foreach ($newEvents as $event) {
             $cameraId = (int) ($event['camera_id'] ?? 0);
 
             // Defensive: only persist events for cameras actually linked to
@@ -115,11 +170,11 @@ class PollVisionEventsJob implements ShouldQueue
             ]);
         }
 
-        $visionJob->update([
-            'status' => 'done',
-            'raw_result' => json_encode($result),
-            'finished_at' => now(),
-        ]);
+        // Advance the cursor past every entry we just looked at (not just
+        // the ones that passed the camera_id check) — those filtered-out
+        // ones are deterministic given the same event, so there's no
+        // benefit to re-checking them on the next poll.
+        $visionJob->update(['events_persisted_count' => count($partialEvents)]);
     }
 
     public function failed(\Throwable $exception): void

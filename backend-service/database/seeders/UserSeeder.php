@@ -13,8 +13,10 @@ class UserSeeder extends Seeder
      */
     public function run(): void
     {
+        // role_id 3 is the CEO role (see RoleSeeder) — the username now
+        // matches it rather than describing the department that created it.
         User::create([
-            'user_name' => 'it',
+            'user_name' => 'ceo',
             'password' => 'It123#321',
             'role_id' => 3
         ]);

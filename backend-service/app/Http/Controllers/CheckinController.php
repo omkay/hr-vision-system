@@ -67,7 +67,13 @@ class CheckinController extends Controller
                 description: 'Video processed — see `checkins` for a per-employee status '
                     . '(`checked_in`, `already_checked_in`, or `unrecognized_employee`).',
             ),
-            new OA\Response(response: 422, description: 'No employee recognized anywhere in the clip.'),
+            new OA\Response(
+                response: 200,
+                description: 'Video processed cleanly but matched nobody — `checkins` is empty '
+                    . 'and `message` says so. Not an error: the clip was read, no enrolled '
+                    . 'employee was recognised in it. (This used to return 422, which also '
+                    . 'aborted /process-sequence before any zone camera ran.)',
+            ),
             new OA\Response(response: 502, description: 'Could not reach the vision service.'),
         ],
     )]

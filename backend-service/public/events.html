@@ -33,10 +33,6 @@
   body { margin: 0; font-family: 'Almarai', sans-serif; background: var(--np-bg); color: var(--text); }
   .page { padding: 16px 18px 40px; }
 
-  .topbar { margin-bottom: 16px; }
-  .topbar h1 { font-size: 18px; font-weight: 800; color: var(--np-dark-blue); margin: 0; }
-  .topbar .subtitle { color: var(--muted); font-size: 12px; margin-top: 2px; }
-
   .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 18px 20px; box-shadow: 0 1px 3px rgba(15,23,42,.04); margin-bottom: 18px; }
   .card h2 { font-size: 14px; font-weight: 800; color: var(--np-dark-blue); margin: 0 0 14px; display: flex; justify-content: space-between; align-items: center; }
   .card h2 .count { color: var(--muted); font-weight: 700; font-size: 12px; }
@@ -63,7 +59,27 @@
   .iselect-btn { width: 100%; min-width: 145px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: #fff; font-family: inherit; font-size: 13px; color: var(--text); cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .iselect-btn::after { content: '▾'; color: var(--muted); font-size: 11px; }
   .iselect-btn.open { border-color: var(--np-dark-blue); }
-  .iselect-list { margin-top: 4px; border: 1px solid var(--border); border-radius: 8px; background: #fff; max-height: 220px; overflow-y: auto; }
+  /* أضف هذا الكلاس الجديد للحاوية */
+  .iselect-wrap {
+    position: relative;
+    width: 100%;
+  }
+
+  /* استبدل كلاس .iselect-list بهذا الكود */
+  .iselect-list {
+    position: absolute;   /* لجعل القائمة تطفو */
+    top: 100%;            /* تبدأ تحت الزر مباشرة */
+    left: 0;
+    right: 0;
+    z-index: 100;         /* لضمان ظهورها فوق الجدول */
+    margin-top: 4px; 
+    border: 1px solid var(--border); 
+    border-radius: 8px; 
+    background: #fff; 
+    max-height: 220px; 
+    overflow-y: auto;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1); /* ظل لإبراز القائمة */
+  }
   .iselect-item { display: block; width: 100%; text-align: right; padding: 8px 10px; border: none; border-bottom: 1px solid var(--border); background: none; font-family: inherit; font-size: 13px; color: var(--text); cursor: pointer; }
   .iselect-item:last-child { border-bottom: none; }
   .iselect-item:hover, .iselect-item.active { background: #EFF6FF; color: var(--np-dark-blue); }
@@ -87,11 +103,6 @@
 </head>
 <body>
 <div class="page">
-
-  <div class="topbar">
-    <h1>سجل الأحداث</h1>
-    <div class="subtitle">تصفية جميع الأحداث المرصودة حسب المنطقة والنوع والموظف والكاميرا</div>
-  </div>
 
   <div class="conn-warning" id="connWarning">تعذر الاتصال بالخادم أو انتهت صلاحية الجلسة — تأكد من تمرير رمز الدخول (token) عبر رابط الصفحة.</div>
 
@@ -234,6 +245,8 @@ function enhanceSelect(id) {
   sel.style.display = 'none';
 
   const wrap = document.createElement('div');
+  wrap.className = 'iselect-wrap';
+  
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = 'iselect-btn';

@@ -10,6 +10,14 @@ class Camera extends Model
         'name',
         'video',
         'zone_id',
+        'is_checkin',
+    ];
+
+    protected $casts = [
+        // 'integer' (not 'boolean') so API responses serialize this as 1/0
+        // rather than true/false — that's the shape consumers of this field
+        // (e.g. the desktop admin app) expect.
+        'is_checkin' => 'integer',
     ];
 
     protected $hidden = [

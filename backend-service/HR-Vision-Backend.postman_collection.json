@@ -1,0 +1,1352 @@
+{
+  "info": {
+    "name": "HR Vision System — Backend Service API",
+    "description": "Laravel backend for the employee activity tracking system.\n\n## Getting started\n1. Set the `base_url` variable (default `http://localhost:8000/api`).\n2. Set `user_name` and `password`.\n3. Run **Auth → POST /login**. Its test script writes the returned token into the `token` collection variable, and every other request inherits Bearer auth from the collection — no manual copying.\n\n## Auth & roles\nLaravel Sanctum bearer tokens. Logging in **deletes the user's existing tokens**, so a second login invalidates the first session.\n\nEvery route except `/login` also passes through `check.idel` (idle-timeout) and an `authorization` middleware. Each folder/request notes which roles are allowed:\n- HR Manager, CEO, HR Employee — day-to-day operations\n- HR Manager, CEO — create/destroy users, employees, zones\n- CEO only — roles, password resets, audit logs\n\nA 403 usually means the role gate, not a bad token.\n\n## Conventions worth knowing\n- **Updates that accept a file use POST, not PUT** (`/employees/update/{id}`, `/camera/update/{id}`) because they're `multipart/form-data`. PUT is used only for JSON-only updates.\n- Field names follow the database as-is, including `Administration` (capital A), `direct_maneger`, and `sheft`.\n- Employees are soft-deleted; uniqueness rules on `job_num` and `card_id` only consider non-deleted rows.\n- File-upload requests have their body rows pre-created but empty — pick a local file in Postman before sending.\n- Video uploads: mp4/mov/avi/mkv, max 512000 KB. Images: jpg/jpeg/png/webp, max 2048 KB.\n\n## Vision pipeline ordering\nCheck-in seeds the day's body-fingerprint gallery, so it must run before zone cameras for that date. `POST /process-sequence` does the whole daily flow in the correct order — reach for it instead of chaining `/checkin` and `/cameras/process-batch` by hand.\n\nGenerated from `routes/api.php` and the controller validation rules.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8000/api",
+      "type": "string",
+      "description": "Backend root + /api"
+    },
+    {
+      "key": "user_name",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "password",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "token",
+      "value": "",
+      "type": "string",
+      "description": "Populated automatically by the login request's test script."
+    }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "description": "Sanctum token auth. `POST /login` deletes any prior tokens for the user, so only one session per account is valid at a time.",
+      "item": [
+        {
+          "name": "POST /login",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/login"
+            },
+            "description": "Public. Returns `{token, user}`. Rate limited by `throttle:login`.\n\nRules:\n- `user_name` required|string\n- `password` required|string\n\n401 on bad credentials.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_name\": \"{{user_name}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "if (res.token) {",
+                  "  pm.collectionVariables.set('token', res.token);",
+                  "  console.log('token saved to collection variable {{token}}');",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /logout",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/logout"
+            },
+            "description": "Deletes all of the current user's tokens. Roles: HR Manager, CEO, HR Employee."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Users",
+      "description": "User accounts (login identities). Employees have no accounts of their own.",
+      "item": [
+        {
+          "name": "POST /user/register",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/user/register"
+            },
+            "description": "Roles: HR Manager, CEO.\n\nRules:\n- `user_name` required|string|unique:users\n- `password` required|confirmed|string|min:6 (send `password_confirmation`)\n- `role_id` required|integer|exists:roles,id",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_name\": \"hr.employee01\",\n  \"password\": \"secret123\",\n  \"password_confirmation\": \"secret123\",\n  \"role_id\": 2\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /user/get",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/user/get"
+            },
+            "description": "Roles: HR Manager, CEO. Result set is narrowed for `role_id == 3`."
+          },
+          "response": []
+        },
+        {
+          "name": "PUT /user/update/1",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/user/update/1"
+            },
+            "description": "Roles: HR Manager, CEO. Password is NOT updatable here — use `/user/reset/{id}`.\n\nRules:\n- `user_name` sometimes|string|unique (ignores self)\n- `role_id` sometimes|integer|exists:roles,id",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_name\": \"hr.employee01.renamed\",\n  \"role_id\": 2\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "PUT /user/reset/1",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/user/reset/1"
+            },
+            "description": "**CEO only.**\n\nRules:\n- `new_password` required|confirmed|string|min:6",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"new_password\": \"newsecret123\",\n  \"new_password_confirmation\": \"newsecret123\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "DELETE /user/delete/1",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/user/delete/1"
+            },
+            "description": "Roles: HR Manager, CEO. Refuses to delete the currently authenticated user."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Roles",
+      "description": "**CEO only** — a role governs what every other route permits, so it sits in the same sensitivity tier as password resets and logs.",
+      "item": [
+        {
+          "name": "POST /role/add",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/role/add"
+            },
+            "description": "CEO only.\n\nRules:\n- `name` required|string|unique:roles",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Auditor\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "PUT /role/update/1",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/role/update/1"
+            },
+            "description": "CEO only.\n\nRules:\n- `name` sometimes|string|unique:roles (ignores self)",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Auditor (read-only)\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "DELETE /role/delete/1",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/role/delete/1"
+            },
+            "description": "CEO only."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Employees",
+      "description": "Employee records. Both add and update are `multipart/form-data` because of the optional profile `image` (update uses POST, not PUT, for that reason).",
+      "item": [
+        {
+          "name": "POST /employees/add",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/employees/add"
+            },
+            "description": "Roles: HR Manager, CEO, HR Employee.\n\n`multipart/form-data`. Set the `image` row to File type and pick a file, or leave it disabled.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "name",
+                  "type": "text",
+                  "description": "required|string|max:255",
+                  "value": "Ahmad Saleh"
+                },
+                {
+                  "key": "Administration",
+                  "type": "text",
+                  "description": "required|string|max:255 — note the capital A",
+                  "value": "Operations"
+                },
+                {
+                  "key": "department",
+                  "type": "text",
+                  "description": "nullable|string|max:255",
+                  "value": "Assembly Line"
+                },
+                {
+                  "key": "job_num",
+                  "type": "text",
+                  "description": "required|integer|unique among non-deleted employees",
+                  "value": "9001"
+                },
+                {
+                  "key": "position",
+                  "type": "text",
+                  "description": "required|string|max:255",
+                  "value": "Technician"
+                },
+                {
+                  "key": "direct_maneger",
+                  "type": "text",
+                  "description": "nullable|string|max:255 — spelling is 'maneger' in the API",
+                  "value": "Layla Hasan"
+                },
+                {
+                  "key": "start_date",
+                  "type": "text",
+                  "description": "required|date",
+                  "value": "2026-01-15"
+                },
+                {
+                  "key": "start_time",
+                  "type": "text",
+                  "description": "required",
+                  "value": "08:00"
+                },
+                {
+                  "key": "end_time",
+                  "type": "text",
+                  "description": "required",
+                  "value": "16:00"
+                },
+                {
+                  "key": "work_site",
+                  "type": "text",
+                  "description": "nullable|string|max:255",
+                  "value": "Plant A"
+                },
+                {
+                  "key": "sheft",
+                  "type": "text",
+                  "description": "nullable|string|max:255 — spelling is 'sheft' in the API",
+                  "value": "morning"
+                },
+                {
+                  "key": "phone_num",
+                  "type": "text",
+                  "description": "nullable|string|max:50",
+                  "value": "0912345678"
+                },
+                {
+                  "key": "card_id",
+                  "type": "text",
+                  "description": "nullable|string|max:255|unique among non-deleted employees",
+                  "value": "CARD-9001"
+                },
+                {
+                  "key": "image",
+                  "type": "file",
+                  "description": "nullable|image|mimes:jpg,jpeg,png,webp|max:2048 KB",
+                  "src": []
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /employees/get",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/employees/get"
+            },
+            "description": "Roles: HR Manager, CEO, HR Employee."
+          },
+          "response": []
+        },
+        {
+          "name": "POST /employees/update/1",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/employees/update/1"
+            },
+            "description": "Roles: HR Manager, CEO. **POST, not PUT** — multipart. Uniqueness checks ignore this employee's own row. Uploading a new `image` replaces the previous one.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "name",
+                  "type": "text",
+                  "description": "required|string|max:255",
+                  "value": "Ahmad Saleh"
+                },
+                {
+                  "key": "Administration",
+                  "type": "text",
+                  "description": "required|string|max:255 — note the capital A",
+                  "value": "Operations"
+                },
+                {
+                  "key": "department",
+                  "type": "text",
+                  "description": "nullable|string|max:255",
+                  "value": "Assembly Line"
+                },
+                {
+                  "key": "job_num",
+                  "type": "text",
+                  "description": "required|integer|unique among non-deleted employees",
+                  "value": "9001"
+                },
+                {
+                  "key": "position",
+                  "type": "text",
+                  "description": "required|string|max:255",
+                  "value": "Technician"
+                },
+                {
+                  "key": "direct_maneger",
+                  "type": "text",
+                  "description": "nullable|string|max:255 — spelling is 'maneger' in the API",
+                  "value": "Layla Hasan"
+                },
+                {
+                  "key": "start_date",
+                  "type": "text",
+                  "description": "required|date",
+                  "value": "2026-01-15"
+                },
+                {
+                  "key": "start_time",
+                  "type": "text",
+                  "description": "required",
+                  "value": "08:00"
+                },
+                {
+                  "key": "end_time",
+                  "type": "text",
+                  "description": "required",
+                  "value": "16:00"
+                },
+                {
+                  "key": "work_site",
+                  "type": "text",
+                  "description": "nullable|string|max:255",
+                  "value": "Plant A"
+                },
+                {
+                  "key": "sheft",
+                  "type": "text",
+                  "description": "nullable|string|max:255 — spelling is 'sheft' in the API",
+                  "value": "morning"
+                },
+                {
+                  "key": "phone_num",
+                  "type": "text",
+                  "description": "nullable|string|max:50",
+                  "value": "0912345678"
+                },
+                {
+                  "key": "card_id",
+                  "type": "text",
+                  "description": "nullable|string|max:255|unique among non-deleted employees",
+                  "value": "CARD-9001"
+                },
+                {
+                  "key": "image",
+                  "type": "file",
+                  "description": "nullable|image|mimes:jpg,jpeg,png,webp|max:2048 KB",
+                  "src": []
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "DELETE /employees/delete/1",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/employees/delete/1"
+            },
+            "description": "Roles: HR Manager, CEO. Soft delete (`deleted_at`), which is why uniqueness rules are scoped to non-deleted rows."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Employee Photos",
+      "description": "Multi-photo enrollment for the vision service: `face_images` feed face recognition, `body_images` seed the body-fingerprint gallery. At least one of the two must be present.",
+      "item": [
+        {
+          "name": "GET /employees/1/photos",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/employees/1/photos"
+            },
+            "description": "Roles: HR Manager, CEO, HR Employee."
+          },
+          "response": []
+        },
+        {
+          "name": "POST /employees/1/photos",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/employees/1/photos"
+            },
+            "description": "Roles: HR Manager, CEO, HR Employee.\n\n`multipart/form-data`. Repeat `face_images[]` / `body_images[]` for multiple files. Sending neither key returns a validation error.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "face_images[]",
+                  "type": "file",
+                  "description": "nullable|array of image|mimes:jpg,jpeg,png,webp|max:2048 KB each",
+                  "src": []
+                },
+                {
+                  "key": "face_images[]",
+                  "type": "file",
+                  "description": "Add as many rows as needed — same key.",
+                  "src": []
+                },
+                {
+                  "key": "body_images[]",
+                  "type": "file",
+                  "description": "nullable|array — body-fingerprint gallery images.",
+                  "src": []
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "DELETE /employees/1/photos/1",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/employees/1/photos/1"
+            },
+            "description": "Roles: HR Manager, CEO, HR Employee. `{employeeId}/photos/{photoId}`."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Zones",
+      "description": "Physical areas a camera watches. `zone_type` drives how activity is interpreted — time in a `work_area` counts differently from a `common_area`.",
+      "item": [
+        {
+          "name": "POST /zone/add",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/zone/add"
+            },
+            "description": "Roles: HR Manager, CEO, HR Employee.\n\nRules:\n- `name` required|string|unique:zones\n- `zone_type` nullable|in:work_area,common_area (defaults to `work_area`)",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Assembly Hall\",\n  \"zone_type\": \"work_area\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /zone/get",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/zone/get"
+            },
+            "description": "Roles: HR Manager, CEO, HR Employee."
+          },
+          "response": []
+        },
+        {
+          "name": "PUT /zone/update/1",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/zone/update/1"
+            },
+            "description": "Roles: HR Manager, CEO.\n\nRules:\n- `name` sometimes|string|unique (ignores self)\n- `zone_type` sometimes|in:work_area,common_area",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Assembly Hall B\",\n  \"zone_type\": \"common_area\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "DELETE /zone/delete/1",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/zone/delete/1"
+            },
+            "description": "Roles: HR Manager, CEO."
+          },
+          "response": []
+        },
+        {
+          "name": "POST /employee/zone/sync",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/employee/zone/sync"
+            },
+            "description": "Roles: HR Manager, CEO, HR Employee.\n\n`sync` semantics: the given list *replaces* the employee's zone assignments — send the full desired set, not a delta. An empty `zone_ids` array detaches all zones.\n\nRules:\n- `employee_id` required|exists:employees,id\n- `zone_ids` array, each `exists:zones,id`",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"employee_id\": 1,\n  \"zone_ids\": [\n    1,\n    2,\n    3\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Cameras",
+      "description": "A camera is a named source bound to a zone, carrying an uploaded video file. `is_checkin` marks the feed used to seed the day's identity gallery.",
+      "item": [
+        {
+          "name": "POST /camera/add",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/camera/add"
+            },
+            "description": "Roles: HR Manager, CEO, HR Employee.\n\n`multipart/form-data`. `video` is required.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "name",
+                  "type": "text",
+                  "description": "required|string|max:255",
+                  "value": "Cam - Assembly Hall"
+                },
+                {
+                  "key": "zone_id",
+                  "type": "text",
+                  "description": "required|exists:zones,id",
+                  "value": "1"
+                },
+                {
+                  "key": "video",
+                  "type": "file",
+                  "description": "required on add / nullable on update — mp4, mov, avi, mkv — max 512000 KB",
+                  "src": []
+                },
+                {
+                  "key": "is_checkin",
+                  "type": "text",
+                  "description": "nullable|boolean. 1 = this camera's video is the check-in feed for the day, 0 = regular zone camera. Accepts 1/0 or true/false here; every response (add/get/update) returns it as 1/0, not true/false.",
+                  "value": "0"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /camera/get",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/camera/get"
+            },
+            "description": "Roles: HR Manager, CEO, HR Employee."
+          },
+          "response": []
+        },
+        {
+          "name": "POST /camera/update/1",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/camera/update/1"
+            },
+            "description": "Roles: HR Manager, CEO, HR Employee. **POST, not PUT** — multipart. `video` is optional; omit it to keep the existing file.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "name",
+                  "type": "text",
+                  "description": "required|string|max:255",
+                  "value": "Cam - Assembly Hall"
+                },
+                {
+                  "key": "zone_id",
+                  "type": "text",
+                  "description": "required|exists:zones,id",
+                  "value": "1"
+                },
+                {
+                  "key": "video",
+                  "type": "file",
+                  "description": "required on add / nullable on update — mp4, mov, avi, mkv — max 512000 KB",
+                  "src": []
+                },
+                {
+                  "key": "is_checkin",
+                  "type": "text",
+                  "description": "nullable|boolean. 1 = this camera's video is the check-in feed for the day, 0 = regular zone camera. Accepts 1/0 or true/false here; every response (add/get/update) returns it as 1/0, not true/false.",
+                  "value": "0"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "DELETE /camera/delete/1",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/camera/delete/1"
+            },
+            "description": "Roles: HR Manager, CEO, HR Employee."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Vision Processing",
+      "description": "Dispatches video to the vision service and tracks the resulting jobs.\n\nOrdering matters: check-in must run **before** zone cameras for a given day, because it seeds that day's body-fingerprint gallery. `POST /process-sequence` does both in the right order in one call — prefer it over calling check-in and batch separately.",
+      "item": [
+        {
+          "name": "POST /camera/1/process",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/camera/1/process"
+            },
+            "description": "Process one camera's video. Roles: HR Manager, CEO, HR Employee.\n\nRules:\n- `session_date` nullable|date (defaults to the camera's own session)\n- `write_video` nullable|boolean — write an annotated output video\n- `annotate_stride` nullable|integer|min:1 — annotate every Nth frame; higher = faster, coarser",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_date\": \"2026-08-21\",\n  \"write_video\": true,\n  \"annotate_stride\": 5\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "POST /cameras/process-batch",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/cameras/process-batch"
+            },
+            "description": "Process several cameras against one session date. Roles: HR Manager, CEO, HR Employee.\n\nRules:\n- `camera_ids` required|array|min:1, each `exists:cameras,id`\n- `session_date`, `write_video`, `annotate_stride` as above",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"camera_ids\": [\n    1,\n    2,\n    3\n  ],\n  \"session_date\": \"2026-08-21\",\n  \"write_video\": false,\n  \"annotate_stride\": 5\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "POST /process-sequence",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/process-sequence"
+            },
+            "description": "**The full daily flow in one call.** Runs check-in first (seeding that day's body-fingerprint gallery in the vision service), then processes the given zone cameras against that same day.\n\nSent as `multipart/form-data` here so `checkin_video` can be a file upload. If you're using `checkin_camera_id` instead of a file, a plain JSON body works too:\n\n```json\n{\"checkin_camera_id\": 1, \"camera_ids\": [2,3], \"write_video\": false, \"annotate_stride\": 5}\n```",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "checkin_video",
+                  "type": "file",
+                  "description": "nullable|file — mp4, mov, avi, mkv — max 512000 KB. Use this OR `checkin_camera_id`, not both.",
+                  "src": []
+                },
+                {
+                  "key": "checkin_camera_id",
+                  "type": "text",
+                  "description": "nullable — a single integer, or repeat `checkin_camera_id[]` for several. Each must exist in cameras.",
+                  "value": "1"
+                },
+                {
+                  "key": "camera_ids[]",
+                  "type": "text",
+                  "description": "required|array|min:1 — repeat this key per camera id.",
+                  "value": "1"
+                },
+                {
+                  "key": "camera_ids[]",
+                  "type": "text",
+                  "description": "required|array|min:1 — repeat this key per camera id.",
+                  "value": "2"
+                },
+                {
+                  "key": "write_video",
+                  "type": "text",
+                  "description": "nullable|boolean",
+                  "value": "0"
+                },
+                {
+                  "key": "annotate_stride",
+                  "type": "text",
+                  "description": "nullable|integer|min:1",
+                  "value": "5"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /vision-jobs",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/vision-jobs?camera_id=1&status=completed&date_from=2026-08-01&date_to=2026-08-21&per_page=15",
+              "query": [
+                {
+                  "key": "camera_id",
+                  "value": "1",
+                  "description": "Filter to jobs touching this camera."
+                },
+                {
+                  "key": "status",
+                  "value": "completed",
+                  "description": "Job status filter."
+                },
+                {
+                  "key": "date_from",
+                  "value": "2026-08-01",
+                  "description": "Created on/after (date)."
+                },
+                {
+                  "key": "date_to",
+                  "value": "2026-08-21",
+                  "description": "Created on/before (date)."
+                },
+                {
+                  "key": "per_page",
+                  "value": "15",
+                  "description": "Page size, default 15."
+                }
+              ]
+            },
+            "description": "Paginated job list. Roles: HR Manager, CEO, HR Employee. All query params optional."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /vision-jobs/1",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/vision-jobs/1"
+            },
+            "description": "Status and result of a single job. Roles: HR Manager, CEO, HR Employee. Poll this after dispatching work."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Activity Events",
+      "description": "Detected activity produced by the vision pipeline. `event_type` is one of presence | working | phone_use | interaction | checkin.",
+      "item": [
+        {
+          "name": "GET /camera/1/events",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/camera/1/events?employee_id=1&event_type=working&zone=Assembly Hall&date=2026-08-21",
+              "query": [
+                {
+                  "key": "employee_id",
+                  "value": "1",
+                  "description": "Filter by employee."
+                },
+                {
+                  "key": "event_type",
+                  "value": "working",
+                  "description": "presence | working | phone_use | interaction | checkin"
+                },
+                {
+                  "key": "zone",
+                  "value": "Assembly Hall",
+                  "description": "Filter by zone name."
+                },
+                {
+                  "key": "date",
+                  "value": "2026-08-21",
+                  "description": "Single day (created_at date)."
+                }
+              ]
+            },
+            "description": "Events for one camera. Roles: HR Manager, CEO, HR Employee. All query params optional."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /events",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/events?camera_id=1&employee_id=1&event_type=working&zone=Assembly Hall&date_from=2026-08-01&date_to=2026-08-21&date=2026-08-21&order=desc",
+              "query": [
+                {
+                  "key": "camera_id",
+                  "value": "1",
+                  "description": "Filter by camera."
+                },
+                {
+                  "key": "employee_id",
+                  "value": "1",
+                  "description": "Filter by employee."
+                },
+                {
+                  "key": "event_type",
+                  "value": "working",
+                  "description": "presence | working | phone_use | interaction | checkin"
+                },
+                {
+                  "key": "zone",
+                  "value": "Assembly Hall",
+                  "description": "Filter by zone name."
+                },
+                {
+                  "key": "date_from",
+                  "value": "2026-08-01",
+                  "description": "Range start. Takes precedence over `date`."
+                },
+                {
+                  "key": "date_to",
+                  "value": "2026-08-21",
+                  "description": "Range end."
+                },
+                {
+                  "key": "date",
+                  "value": "2026-08-21",
+                  "description": "Single day — ignored if `date_from`/`date_to` are set."
+                },
+                {
+                  "key": "order",
+                  "value": "desc",
+                  "description": "`asc` or `desc` (default `desc`)."
+                }
+              ]
+            },
+            "description": "Events across all cameras. Roles: HR Manager, CEO, HR Employee.\n\nNote the date precedence: if either `date_from` or `date_to` is present, the single `date` param is ignored."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Check-in",
+      "description": "Kiosk check-in by video identification. A shared kiosk device logs in once with an HR-issued account and stays logged in — `auth:sanctum` still applies, it's just not per-employee, since employees have no accounts.",
+      "item": [
+        {
+          "name": "POST /checkin",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/checkin"
+            },
+            "description": "Identifies everyone in the video and records their check-in. Roles: HR Manager, CEO, HR Employee.\n\n`multipart/form-data`.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "video",
+                  "type": "file",
+                  "description": "required|file — mp4, mov, avi, mkv — max 512000 KB",
+                  "src": []
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /checkins",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/checkins?employee_id=1&date=2026-08-21",
+              "query": [
+                {
+                  "key": "employee_id",
+                  "value": "1",
+                  "description": "Filter by employee."
+                },
+                {
+                  "key": "date",
+                  "value": "2026-08-21",
+                  "description": "Single day (created_at date)."
+                }
+              ]
+            },
+            "description": "Recorded check-in events. Roles: HR Manager, CEO, HR Employee."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Reports",
+      "description": "Aggregated activity, grouped on demand.",
+      "item": [
+        {
+          "name": "GET /reports/summary",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/reports/summary?group_by=date,employee,zone&employee_id=1&zone=Assembly Hall&event_type=working&date_from=2026-08-01&date_to=2026-08-21",
+              "query": [
+                {
+                  "key": "group_by",
+                  "value": "date,employee,zone",
+                  "description": "Comma-separated subset of `date`, `employee`, `zone`. Defaults to `date,employee`. Unrecognised values are dropped; if nothing valid remains it falls back to the default."
+                },
+                {
+                  "key": "employee_id",
+                  "value": "1",
+                  "description": "Filter by employee."
+                },
+                {
+                  "key": "zone",
+                  "value": "Assembly Hall",
+                  "description": "Filter by zone name."
+                },
+                {
+                  "key": "event_type",
+                  "value": "working",
+                  "description": "presence | working | phone_use | interaction | checkin"
+                },
+                {
+                  "key": "date_from",
+                  "value": "2026-08-01",
+                  "description": "Range start."
+                },
+                {
+                  "key": "date_to",
+                  "value": "2026-08-21",
+                  "description": "Range end."
+                }
+              ]
+            },
+            "description": "Returns `event_count` and `total_duration_s` per group, with employee names resolved. Roles: HR Manager, CEO, HR Employee."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Audit Logs",
+      "description": "**CEO only.**",
+      "item": [
+        {
+          "name": "GET /logs",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/logs"
+            },
+            "description": "CEO only. Spatie activity log, paginated 20 per page, newest first. Each entry carries a `changes` map of `{old, new}` per field, derived from the created/updated/deleted event."
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\AttendanceController;
 use App\Http\Controllers\CameraController;
 use App\Http\Controllers\CameraProcessingController;
 use App\Http\Controllers\CheckinController;
@@ -33,6 +34,15 @@ Route::middleware(['filter_input', 'auth:sanctum', 'check.idel', 'authorization:
     Route::post('/process-sequence', [CameraProcessingController::class, 'processSequence']);
     Route::get('/camera/{id}/events', [CameraProcessingController::class, 'events']);
     Route::get('/events', [CameraProcessingController::class, 'allEvents']);
+
+    // Daily attendance + manual overrides. See AttendanceController: the
+    // manual routes exist because recognition genuinely fails on real people
+    // and attendance feeds payroll, so HR must be able to correct any of it.
+    Route::get('/attendance', [AttendanceController::class, 'index']);
+    Route::post('/attendance/checkin', [AttendanceController::class, 'storeCheckin']);
+    Route::post('/attendance/checkout', [AttendanceController::class, 'storeCheckout']);
+    Route::delete('/attendance/event/{id}', [AttendanceController::class, 'destroy']);
+    Route::post('/attendance/finalize', [AttendanceController::class, 'finalize']);
     Route::get('/vision-jobs', [CameraProcessingController::class, 'index']);
     Route::get('/vision-jobs/{id}', [CameraProcessingController::class, 'jobStatus']);
     Route::get('/reports/summary', [ReportController::class, 'summary']);

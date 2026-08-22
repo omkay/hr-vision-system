@@ -39,10 +39,6 @@
   }
   .page { padding: 16px 18px 40px; }
 
-  .topbar { margin-bottom: 16px; }
-  .topbar h1 { font-size: 18px; font-weight: 800; color: var(--np-dark-blue); margin: 0; }
-  .topbar .subtitle { color: var(--muted); font-size: 12px; margin-top: 2px; }
-
   .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 18px 20px; box-shadow: 0 1px 3px rgba(15,23,42,.04); }
 
   .btn { padding: 9px 16px; border-radius: 8px; border: none; background: var(--np-dark-blue); color: #fff; font-family: inherit; font-size: 13px; font-weight: 700; cursor: pointer; }
@@ -71,7 +67,22 @@
   .iselect-btn { width: 100%; min-width: 150px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: #fff; font-family: inherit; font-size: 13px; color: var(--text); cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .iselect-btn::after { content: '▾'; color: var(--muted); font-size: 11px; }
   .iselect-btn.open { border-color: var(--np-dark-blue); }
-  .iselect-list { margin-top: 4px; border: 1px solid var(--border); border-radius: 8px; background: #fff; max-height: 220px; overflow-y: auto; }
+  .iselect-wrap {position: relative; width: 100%;}
+/* قم بتعديل هذا الكلاس ليصبح هكذا */
+  .iselect-list {
+    position: absolute;   /* الأهم: جعلها تطفو فوق العناصر */
+    top: 100%;            /* تبدأ مباشرة تحت الزر */
+    left: 0;
+    right: 0;
+    z-index: 100;         /* للتأكد من ظهورها فوق البطاقات السفلية */
+    margin-top: 4px; 
+    border: 1px solid var(--border); 
+    border-radius: 8px; 
+    background: #fff; 
+    max-height: 220px; 
+    overflow-y: auto;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1); /* ظل خفيف لإبرازها كقائمة عائمة */
+  }
   .iselect-item { display: block; width: 100%; text-align: right; padding: 8px 10px; border: none; border-bottom: 1px solid var(--border); background: none; font-family: inherit; font-size: 13px; color: var(--text); cursor: pointer; }
   .iselect-item:last-child { border-bottom: none; }
   .iselect-item:hover, .iselect-item.active { background: #EFF6FF; color: var(--np-dark-blue); }
@@ -111,17 +122,51 @@
   .prod-pct.good { color: var(--ok); }
   .prod-pct.mid { color: var(--warn); }
   .prod-pct.low { color: var(--np-red); }
+
+  /* Recent processing jobs */
+  .active-badge { display: none; align-items: center; gap: 6px; background: #FEF3C7; color: #92400E; font-size: 11px; font-weight: 800; padding: 4px 10px; border-radius: 999px; }
+  .active-badge.show { display: inline-flex; }
+  .job-row { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .job-row:last-child { border-bottom: none; }
+  .job-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+  .job-dot.queued, .job-dot.running { background: var(--warn); animation: job-pulse 1.4s infinite; }
+  .job-dot.done { background: var(--ok); }
+  .job-dot.error { background: var(--np-red); }
+  .job-status-label { font-size: 11px; font-weight: 800; min-width: 62px; flex-shrink: 0; }
+  .job-status-label.queued, .job-status-label.running { color: var(--warn); }
+  .job-status-label.done { color: var(--ok); }
+  .job-status-label.error { color: var(--np-red); }
+  .job-cams { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+  .job-time { color: var(--muted); font-size: 11px; white-space: nowrap; }
+  .job-error-msg { padding: 0 0 9px 19px; color: var(--np-red); font-size: 12px; }
+  @keyframes job-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 </style>
 </head>
 <body>
 <div class="page">
+  <div class="conn-warning" id="connWarning">تعذر الاتصال بالخادم أو انتهت صلاحية الجلسة — تأكد من تمرير رمز الدخول (token) عبر رابط الصفحة.</div>
 
-  <div class="topbar">
-    <h1>لوحة التحكم والتقارير</h1>
-    <div class="subtitle">مؤشرات الحضور، تسجيل الدخول، والإنتاجية</div>
+  <div class="card" style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:20px">
+    <div>
+      <h2 style="margin-bottom:4px">تشغيل التسلسل الكامل</h2>
+      <div class="muted">يعالج كاميرات تسجيل الحضور أولاً تلقائياً (التعرف على الوجه وبناء بصمة الجسد)، ثم يعالج جميع الكاميرات — بما فيها كاميرات تسجيل الحضور نفسها — لاستخراج الأحداث والفيديو الموسوم.</div>
+    </div>
+    <div style="display:flex; align-items:center; gap:10px">
+      <span id="runSequenceStatus" class="muted"></span>
+      <button class="btn" id="runSequenceBtn" onclick="runFullSequence()">تشغيل كل الكاميرات</button>
+    </div>
   </div>
 
-  <div class="conn-warning" id="connWarning">تعذر الاتصال بالخادم أو انتهت صلاحية الجلسة — تأكد من تمرير رمز الدخول (token) عبر رابط الصفحة.</div>
+  <div class="card" style="margin-bottom:20px">
+    <h2 style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap">
+      <span style="display:flex; align-items:center; gap:8px">
+        المهام غير المكتملة
+        <span id="activeJobsBadge" class="active-badge"></span>
+      </span>
+      <span class="muted" id="jobsUpdatedAt"></span>
+    </h2>
+    <div id="jobsList" class="loading">جارٍ التحميل…</div>
+  </div>
 
   <div class="card filters">
     <div class="field">
@@ -149,7 +194,7 @@
     <div class="card kpi"><div class="icon blue">👥</div><div><div class="value" id="kpiEmployees">—</div><div class="label">إجمالي الموظفين</div></div></div>
     <div class="card kpi"><div class="icon green">✔</div><div><div class="value" id="kpiCheckins">—</div><div class="label">تسجيلات حضور اليوم</div></div></div>
     <div class="card kpi"><div class="icon light">🗺</div><div><div class="value" id="kpiZones">—</div><div class="label">مناطق العمل النشطة</div></div></div>
-    <div class="card kpi"><div class="icon red">📋</div><div><div class="value" id="kpiEvents">—</div><div class="label">إجمالي الأحداث (ضمن الفلاتر)</div></div></div>
+    <div class="card kpi"><div class="icon red">📋</div><div><div class="value" id="kpiEvents">—</div><div class="label">أحداث الموظفين المعروفين (ضمن الفلاتر)</div></div></div>
   </div>
 
   <div class="charts-grid">
@@ -174,7 +219,7 @@
     <div class="card kpi"><div class="icon green">💼</div><div><div class="value" id="kpiProductivity">—</div><div class="label">نسبة وقت العمل إلى (عمل + هاتف)</div></div></div>
     <div class="card kpi"><div class="icon red">📱</div><div><div class="value" id="kpiPhoneShare">—</div><div class="label">نسبة استخدام الهاتف من الوقت المرصود</div></div></div>
     <div class="card kpi"><div class="icon blue">⏱</div><div><div class="value" id="kpiAvgDuration">—</div><div class="label">متوسط مدة الحدث (ثانية)</div></div></div>
-    <div class="card kpi"><div class="icon light">🕒</div><div><div class="value" id="kpiTrackedHours">—</div><div class="label">إجمالي الوقت المرصود (ساعة)</div></div></div>
+    <div class="card kpi"><div class="icon light">🕒</div><div><div class="value" id="kpiTrackedHours">—</div><div class="label">الوقت المرصود للموظفين المعروفين (ساعة)</div></div></div>
   </div>
 
   <div class="kpi-grid">
@@ -191,6 +236,35 @@
     <div class="card">
       <h2>الوقت المستغرق حسب نوع الحدث (دقيقة)</h2>
       <div class="chart-wrap"><canvas id="chartDurationByType"></canvas></div>
+    </div>
+  </div>
+
+  <div class="section-title">النشاط غير المعرَّف</div>
+
+  <div class="card" style="margin-bottom:20px">
+    <div class="muted" style="margin-bottom:14px">
+      أحداث لم يتمكن النظام من نسبها إلى موظف معروف (UNKNOWN) — زائر، أو موظف
+      غير مُسجَّل في المعرض، أو شخص لم تتضح ملامحه بما يكفي للتعرّف عليه.
+      هذه الأحداث مستثناة من كل مؤشرات الإنتاجية أعلاه، وتُعرض هنا وحدها.
+    </div>
+    <div class="kpi-grid" style="margin-bottom:0">
+      <div class="card kpi"><div class="icon red">❓</div><div><div class="value" id="kpiUnknownEvents">—</div><div class="label">أحداث غير معرَّفة</div></div></div>
+      <div class="card kpi"><div class="icon red">⏱</div><div><div class="value" id="kpiUnknownMinutes">—</div><div class="label">دقائق غير معرَّفة</div></div></div>
+      <div class="card kpi"><div class="icon light">📊</div><div><div class="value" id="kpiUnknownShare">—</div><div class="label">نسبتها من إجمالي الوقت المرصود</div></div></div>
+      <div class="card kpi"><div class="icon blue">🗺</div><div><div class="value" id="kpiUnknownZones">—</div><div class="label">مناطق ظهرت فيها</div></div></div>
+    </div>
+  </div>
+
+  <div class="charts-grid" style="margin-bottom:20px">
+    <div class="card">
+      <h2>النشاط غير المعرَّف حسب المنطقة (دقيقة)</h2>
+      <div class="chart-wrap"><canvas id="chartUnknownByZone"></canvas></div>
+      <div class="muted" id="unknownByZoneEmpty" style="display:none">لا توجد أحداث غير معرَّفة ضمن الفلاتر الحالية</div>
+    </div>
+    <div class="card">
+      <h2>النشاط غير المعرَّف حسب نوع الحدث (دقيقة)</h2>
+      <div class="chart-wrap"><canvas id="chartUnknownByType"></canvas></div>
+      <div class="muted" id="unknownByTypeEmpty" style="display:none">لا توجد أحداث غير معرَّفة ضمن الفلاتر الحالية</div>
     </div>
   </div>
 
@@ -264,6 +338,24 @@ async function api(path, params = null) {
   return data;
 }
 
+// POST variant of api() — used for /process-sequence below. Takes a
+// FormData body (no Content-Type header set manually so the browser fills
+// in the multipart boundary itself, same convention as test-ui.html).
+async function apiPost(path, formData) {
+  const url = baseUrl() + path;
+  const headers = { 'Accept': 'application/json' };
+  if (token()) headers['Authorization'] = 'Bearer ' + token();
+  const res = await fetch(url, { method: 'POST', headers, body: formData });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401) showConnWarning();
+  if (!res.ok) {
+    const err = new Error(data.message || ('HTTP ' + res.status));
+    err.data = data;
+    throw err;
+  }
+  return data;
+}
+
 /* ---------------------------------------------------------------------
    Dashboard data + rendering
    --------------------------------------------------------------------- */
@@ -306,6 +398,8 @@ function enhanceSelect(id) {
   sel.style.display = 'none';
 
   const wrap = document.createElement('div');
+  wrap.className = 'iselect-wrap';
+  
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = 'iselect-btn';
@@ -410,11 +504,12 @@ function currentFilters() {
 }
 
 async function loadByDateChart(filters) {
-  const res = await api('/reports/summary', { ...filters, group_by: 'date' });
+  const res = await api('/reports/summary', { ...filters, group_by: 'date', identified_only: 1 });
   const groups = (res.groups || []).slice().sort((a, b) => (a.date || '').localeCompare(b.date || ''));
   const labels = groups.map(g => g.date);
   const counts = groups.map(g => g.event_count);
-  document.getElementById('kpiEvents').textContent = counts.reduce((a, b) => a + b, 0);
+  // kpiEvents is written by loadProductivity (identified events only) so there
+  // is a single source of truth for it — see renderUnidentified for the rest.
 
   destroyChart('byDate');
   charts.byDate = new Chart(document.getElementById('chartByDate'), {
@@ -433,7 +528,7 @@ async function loadByDateChart(filters) {
 }
 
 async function loadByZoneChart(filters) {
-  const res = await api('/reports/summary', { ...filters, group_by: 'zone' });
+  const res = await api('/reports/summary', { ...filters, group_by: 'zone', identified_only: 1 });
   const groups = res.groups || [];
   const labels = groups.map(g => g.zone || 'غير محدد');
   const counts = groups.map(g => g.event_count);
@@ -448,8 +543,11 @@ async function loadByZoneChart(filters) {
 }
 
 async function loadByEmployeeChart(filters) {
-  const res = await api('/reports/summary', { ...filters, group_by: 'employee' });
-  const groups = (res.groups || []).slice().sort((a, b) => b.event_count - a.event_count).slice(0, 8);
+  const res = await api('/reports/summary', { ...filters, group_by: 'employee', identified_only: 1 });
+  // identified_only=1 already excludes them server-side; this guards against
+  // an older backend, where a null-employee group rendered as the label "#null".
+  const groups = (res.groups || []).filter(g => g.employee_id != null)
+    .slice().sort((a, b) => b.event_count - a.event_count).slice(0, 8);
   const labels = groups.map(g => g.employee_name || ('#' + g.employee_id));
   const counts = groups.map(g => g.event_count);
 
@@ -467,9 +565,97 @@ async function loadByEmployeeChart(filters) {
 
 const EVENT_TYPE_LABEL = {
   presence: 'تواجد', working: 'عمل', phone_use: 'استخدام هاتف',
-  interaction: 'تفاعل', checkin: 'تسجيل حضور',
+  interaction: 'تفاعل', checkin: 'تسجيل حضور', checkout: 'تسجيل خروج',
 };
-const TYPE_PALETTE = { presence: '#0054A6', working: '#16A34A', phone_use: '#ED1C24', interaction: '#7C3AED', checkin: '#00BFF3' };
+const TYPE_PALETTE = { presence: '#0054A6', working: '#16A34A', phone_use: '#ED1C24', interaction: '#7C3AED', checkin: '#00BFF3', checkout: '#0EA5E9' };
+
+/* Unidentified (UNKNOWN) activity — reported on its own rather than folded
+   into anyone's productivity. A long unidentified presence in a work area is
+   operationally interesting (an unenrolled colleague, a visitor, or a
+   recognition failure worth investigating), which is exactly why it should be
+   visible instead of silently dropped or silently averaged in. */
+function renderUnidentified(unknownEvents, identifiedDurationS) {
+  const totalS = unknownEvents.reduce((a, e) => a + (Number(e.duration_s) || 0), 0);
+  const byZone = {};
+  unknownEvents.forEach(e => {
+    const z = e.zone || 'غير محدد';
+    if (!byZone[z]) byZone[z] = { zone: z, count: 0, durS: 0, longestS: 0 };
+    const d = Number(e.duration_s) || 0;
+    byZone[z].count += 1;
+    byZone[z].durS += d;
+    byZone[z].longestS = Math.max(byZone[z].longestS, d);
+  });
+  const zones = Object.values(byZone).sort((a, b) => b.durS - a.durS);
+  const grandTotal = totalS + (identifiedDurationS || 0);
+
+  document.getElementById('kpiUnknownEvents').textContent = unknownEvents.length;
+  document.getElementById('kpiUnknownMinutes').textContent = (totalS / 60).toFixed(1);
+  document.getElementById('kpiUnknownShare').textContent =
+    grandTotal > 0 ? Math.round((totalS / grandTotal) * 100) + '%' : '—';
+  document.getElementById('kpiUnknownZones').textContent = zones.length;
+
+  // By event type as well as by zone: "where" and "what" answer different
+  // questions — a long unidentified `presence` in a work area is a coverage
+  // gap, whereas unidentified `interaction` mostly means someone stood near a
+  // known employee.
+  const byType = {};
+  unknownEvents.forEach(e => {
+    const t = e.event_type || 'presence';
+    byType[t] = (byType[t] || 0) + (Number(e.duration_s) || 0);
+  });
+
+  // Zone slices keep count and longest-appearance in the tooltip rather than a
+  // separate table: the longest single appearance is the actionable number
+  // (a few seconds is a passer-by, minutes is an unenrolled person or a
+  // recognition failure), but it doesn't deserve its own column.
+  drawUnknownDoughnut('unknownByZone', 'chartUnknownByZone', 'unknownByZoneEmpty',
+    zones.map(z => z.zone),
+    zones.map(z => +(z.durS / 60).toFixed(1)),
+    zones.map(z => `${z.count} حدث · أطول ظهور ${z.longestS.toFixed(1)} ث`));
+
+  const typeKeys = Object.keys(byType);
+  drawUnknownDoughnut('unknownByType', 'chartUnknownByType', 'unknownByTypeEmpty',
+    typeKeys.map(k => EVENT_TYPE_LABEL[k] || k),
+    typeKeys.map(k => +(byType[k] / 60).toFixed(1)),
+    null,
+    typeKeys.map(k => TYPE_PALETTE[k] || '#94A3B8'));
+}
+
+const UNKNOWN_PALETTE = ['#ED1C24', '#F97316', '#D97706', '#7C3AED', '#DB2777', '#0891B2', '#64748B', '#16A34A'];
+
+function drawUnknownDoughnut(key, canvasId, emptyId, labels, values, extraLines, colors) {
+  const canvas = document.getElementById(canvasId);
+  const empty = document.getElementById(emptyId);
+  destroyChart(key);
+  const hasData = values.some(v => v > 0);
+  canvas.style.display = hasData ? '' : 'none';
+  empty.style.display = hasData ? 'none' : '';
+  if (!hasData) return;
+
+  charts[key] = new Chart(canvas, {
+    type: 'doughnut',
+    data: {
+      labels,
+      datasets: [{ data: values, backgroundColor: colors || labels.map((_, i) => UNKNOWN_PALETTE[i % UNKNOWN_PALETTE.length]) }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'bottom', labels: { font: { family: 'Almarai' } } },
+        tooltip: {
+          callbacks: {
+            label(ctx) {
+              const total = ctx.dataset.data.reduce((a, b) => a + b, 0);
+              const pct = total > 0 ? Math.round((ctx.parsed / total) * 100) : 0;
+              const base = `${ctx.parsed} د (${pct}%)`;
+              return extraLines ? [base, extraLines[ctx.dataIndex]] : base;
+            },
+          },
+        },
+      },
+    },
+  });
+}
 
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -495,7 +681,15 @@ async function loadEventTypeAndProductivity(filters) {
     date_from: filters.date_from, date_to: filters.date_to,
     employee_id: filters.employee_id, zone: filters.zone,
   });
-  const events = res.events || [];
+  const allEvents = res.events || [];
+  // Every metric below is computed from IDENTIFIED events only. An event with
+  // employee_id == null is an UNKNOWN from the vision pipeline: there is no
+  // employee to credit the time to, so including it skewed productivity,
+  // average duration and tracked hours, and produced a "غير معروف" row in the
+  // per-employee table. Unidentified activity is reported separately instead
+  // (see renderUnidentified) — it matters, but it isn't anyone's productivity.
+  const events = allEvents.filter(e => e.employee_id != null);
+  const unknownEvents = allEvents.filter(e => e.employee_id == null);
 
   const typeCounts = {};
   const typeDurationS = {};
@@ -512,9 +706,9 @@ async function loadEventTypeAndProductivity(filters) {
     typeDurationS[t] = (typeDurationS[t] || 0) + dur;
     totalDurationS += dur;
 
-    const key = e.employee_id != null ? String(e.employee_id) : 'unknown';
+    const key = String(e.employee_id);
     if (!perEmployee[key]) {
-      perEmployee[key] = { name: e.employee_name || 'غير معروف', working: 0, phone: 0, presence: 0, interaction: 0 };
+      perEmployee[key] = { name: e.employee_name || ('#' + e.employee_id), working: 0, phone: 0, presence: 0, interaction: 0 };
     }
     const bucket = perEmployee[key];
     if (t === 'working') bucket.working += dur;
@@ -544,6 +738,8 @@ async function loadEventTypeAndProductivity(filters) {
   document.getElementById('kpiNonWorkTime').textContent = events.length ? (nonWorkS / 60).toFixed(1) : '—';
   document.getElementById('kpiAvgDuration').textContent = events.length ? avgDuration.toFixed(1) : '—';
   document.getElementById('kpiTrackedHours').textContent = (totalDurationS / 3600).toFixed(1);
+  document.getElementById('kpiEvents').textContent = events.length;
+  renderUnidentified(unknownEvents, totalDurationS);
 
   // Event-type charts
   const typeKeys = Object.keys(typeCounts);
@@ -598,6 +794,140 @@ async function loadEventTypeAndProductivity(filters) {
   }
 }
 
+// Triggers /process-sequence for every camera, checkin cameras included.
+// checkin_video/checkin_camera_id are intentionally left out of the
+// request so the backend auto-selects every camera flagged is_checkin=true
+// and runs their checkin videos first (face ID + body-fingerprint capture),
+// seeding today's daily fingerprint gallery. Checkin cameras' footage is
+// THEN also submitted as a normal camera_ids entry below, so it gets a
+// second pass through the actual events/zone pipeline for human review
+// (annotated video, presence/interaction events in the entrance zone) —
+// by design, not just a fingerprint source. See
+// CameraProcessingController::processSequence().
+async function runFullSequence() {
+  const btn = document.getElementById('runSequenceBtn');
+  const statusEl = document.getElementById('runSequenceStatus');
+  if (btn.disabled) return;
+  btn.disabled = true;
+  statusEl.textContent = 'جارٍ التحضير…';
+
+  try {
+    const camsRes = await api('/camera/get');
+    const allCameraIds = (camsRes.cameras || []).map(c => c.id);
+
+    if (!allCameraIds.length) {
+      statusEl.textContent = 'لا توجد كاميرات لمعالجتها';
+      btn.disabled = false;
+      return;
+    }
+
+    const fd = new FormData();
+    allCameraIds.forEach(id => fd.append('camera_ids[]', id));
+    fd.append('write_video', '1');
+
+    statusEl.textContent = 'جارٍ تشغيل تسجيل الحضور ثم معالجة الكاميرات…';
+    const data = await apiPost('/process-sequence', fd);
+    const sessionDate = data.checkin?.session_date || '—';
+    const jobId = data.job?.id;
+    statusEl.textContent = jobId
+      ? `تم البدء (تاريخ الجلسة: ${sessionDate}) — جارٍ المعالجة…`
+      : `تم البدء (تاريخ الجلسة: ${sessionDate})`;
+
+    if (jobId) pollSequenceJob(jobId, statusEl, btn);
+    else btn.disabled = false;
+  } catch (e) {
+    const msg = e.data?.message || e.message;
+    statusEl.innerHTML = `<span style="color:var(--np-red)">فشل: ${esc(msg)}</span>`;
+    btn.disabled = false;
+  }
+}
+
+async function pollSequenceJob(jobId, statusEl, btn) {
+  try {
+    const data = await api(`/vision-jobs/${jobId}`);
+    if (data.status === 'done') {
+      statusEl.innerHTML = `<span style="color:var(--ok)">تمت المعالجة بنجاح ✔</span>`;
+      btn.disabled = false;
+      loadAll();
+      return;
+    }
+    if (data.status === 'error') {
+      statusEl.innerHTML = `<span style="color:var(--np-red)">فشلت المعالجة: ${esc(data.error_message || '')}</span>`;
+      btn.disabled = false;
+      return;
+    }
+    statusEl.textContent = `قيد المعالجة (${data.status})…`;
+    setTimeout(() => pollSequenceJob(jobId, statusEl, btn), 5000);
+  } catch (e) {
+    statusEl.innerHTML = `<span style="color:var(--np-red)">تعذر التحقق من حالة المهمة: ${esc(e.message)}</span>`;
+    btn.disabled = false;
+  }
+}
+
+/* ---------------------------------------------------------------------
+   Recent processing jobs — polled independently of loadAll()'s filters so
+   this list (and the "job running" badge) stays current even if the user
+   never touches the filter bar, and reflects jobs started from anywhere
+   (this page's "run all cameras" button, test-ui.html, another tab/device),
+   not just ones this page itself submitted.
+   --------------------------------------------------------------------- */
+const JOB_STATUS_LABEL = { queued: 'قيد الانتظار', running: 'قيد التنفيذ', done: 'مكتملة', error: 'فشلت' };
+let jobsPollTimer = null;
+
+function formatJobTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  if (isNaN(d)) return String(ts);
+  return d.toLocaleString('ar', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+function updateActiveJobsBadge(count) {
+  const el = document.getElementById('activeJobsBadge');
+  if (count > 0) {
+    el.textContent = `🟡 ${count} ${count === 1 ? 'مهمة قيد التنفيذ الآن' : 'مهام قيد التنفيذ الآن'}`;
+    el.classList.add('show');
+  } else {
+    el.classList.remove('show');
+  }
+}
+
+async function loadRecentJobs() {
+  try {
+    // Fetch a larger page than we display — /vision-jobs is newest-first
+    // and includes finished jobs, so a wide enough page is needed to still
+    // find any not-yet-done job even when several done ones were queued
+    // more recently (e.g. finished right after this one was submitted).
+    const data = await api('/vision-jobs', { per_page: 30 });
+    const jobs = (data.jobs || []).filter(j => j.status === 'queued' || j.status === 'running');
+    const listEl = document.getElementById('jobsList');
+
+    if (!jobs.length) {
+      listEl.innerHTML = '<div class="empty">لا توجد مهام قيد التنفيذ حالياً</div>';
+    } else {
+      listEl.innerHTML = jobs.map(j => {
+        const status = j.status || 'queued';
+        const row = `
+          <div class="job-row">
+            <span class="job-dot ${esc(status)}"></span>
+            <span class="job-status-label ${esc(status)}">${esc(JOB_STATUS_LABEL[status] || status)}</span>
+            <span class="job-cams">${esc((j.cameras || []).join('، ') || '—')}</span>
+            <span class="job-time">${esc(formatJobTime(j.created_at))}</span>
+          </div>`;
+        const errorLine = (status === 'error' && j.error_message)
+          ? `<div class="job-error-msg">${esc(j.error_message)}</div>`
+          : '';
+        return row + errorLine;
+      }).join('');
+    }
+
+    document.getElementById('jobsUpdatedAt').textContent = 'آخر تحديث: ' + new Date().toLocaleTimeString('ar');
+    const activeCount = jobs.filter(j => j.status === 'queued' || j.status === 'running').length;
+    updateActiveJobsBadge(activeCount);
+  } catch (e) {
+    console.error(e);
+  }
+}
+
 async function loadAll() {
   const filters = currentFilters();
   await Promise.all([
@@ -606,6 +936,7 @@ async function loadAll() {
     loadByZoneChart(filters),
     loadByEmployeeChart(filters),
     loadEventTypeAndProductivity(filters),
+    loadRecentJobs(),
   ]).catch(e => console.error(e));
 }
 
@@ -616,6 +947,10 @@ async function loadAll() {
   if (!token()) showConnWarning('لا يوجد رمز دخول — مرر ?token=... عند تضمين هذه الصفحة.');
   await populateFilterOptions();
   await loadAll();
+  // Keep the jobs list (and the active-job badge) fresh on its own cadence,
+  // independent of the filter bar / loadAll(), so a job started elsewhere
+  // still shows up here without the user re-applying filters.
+  jobsPollTimer = setInterval(loadRecentJobs, 8000);
 })();
 </script>
 </body>

@@ -12,6 +12,7 @@ class ActivityEvent extends Model
         'employee_id',
         'confidence',
         'method',
+        'recorded_by',
         'event_type',
         'start_s',
         'end_s',
@@ -39,5 +40,17 @@ class ActivityEvent extends Model
     public function visionJob()
     {
         return $this->belongsTo(VisionJob::class);
+    }
+
+    /** The user who entered this row by hand; null for automatic events. */
+    public function recordedBy()
+    {
+        return $this->belongsTo(User::class, 'recorded_by');
+    }
+
+    /** True when a person asserted this attendance rather than the cameras. */
+    public function getIsManualAttribute(): bool
+    {
+        return $this->method === 'manual';
     }
 }

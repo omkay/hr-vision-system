@@ -48,6 +48,18 @@ return [
         // vision-service's port is published to the host either way
         // (Dockerized or running natively).
         'public_url' => env('VISION_SERVICE_PUBLIC_URL', 'http://localhost:8000'),
+        // Ask vision-service to emit its per-frame identity decision log
+        // (outputs/<cam>_<video>_identity_debug.csv: crop-quality verdict,
+        // face/ReID score + margin, which bank matched, assigned name, vote
+        // score). Defaults ON: every trigger in this project goes through
+        // /process-sequence — dashboard.html and all three test-ui.html
+        // copies — so defaulting it here is what makes the log appear no
+        // matter which button was pressed, without each UI having to know
+        // about the flag. Cost is one CSV per camera per run; identity
+        // tuning is impossible without it. Set VISION_DEBUG_IDENTITY=false
+        // once thresholds are settled, or override per request with
+        // debug_identity=0.
+        'debug_identity' => env('VISION_DEBUG_IDENTITY', true),
     ],
 
 ];

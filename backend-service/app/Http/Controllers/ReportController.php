@@ -32,9 +32,11 @@ class ReportController extends Controller
             new OA\Parameter(name: 'group_by', in: 'query', required: false, description: "Comma-separated subset of 'date', 'employee', 'zone'. Defaults to 'date,employee'.", schema: new OA\Schema(type: 'string', example: 'date,employee,zone')),
             new OA\Parameter(name: 'employee_id', in: 'query', required: false, schema: new OA\Schema(type: 'integer')),
             new OA\Parameter(name: 'zone', in: 'query', required: false, schema: new OA\Schema(type: 'string')),
-            new OA\Parameter(name: 'event_type', in: 'query', required: false, schema: new OA\Schema(type: 'string', enum: ['presence', 'working', 'phone_use', 'interaction', 'checkin'])),
+            new OA\Parameter(name: 'event_type', in: 'query', required: false, schema: new OA\Schema(type: 'string', enum: ['presence', 'working', 'phone_use', 'interaction', 'checkin', 'checkout'])),
             new OA\Parameter(name: 'date_from', in: 'query', required: false, schema: new OA\Schema(type: 'string', format: 'date')),
             new OA\Parameter(name: 'date_to', in: 'query', required: false, schema: new OA\Schema(type: 'string', format: 'date')),
+            new OA\Parameter(name: 'identified_only', in: 'query', required: false, description: 'Only events attributed to a known employee (employee_id IS NOT NULL). Use for any per-employee metric — unidentified events have no employee to attribute time to and would inflate totals and averages.', schema: new OA\Schema(type: 'boolean')),
+            new OA\Parameter(name: 'unidentified_only', in: 'query', required: false, description: 'Only events the vision pipeline could not attribute (employee_id IS NULL, i.e. UNKNOWN). Use to report on unidentified activity separately — e.g. an unrecognised person in a work area. Ignored if identified_only is also set.', schema: new OA\Schema(type: 'boolean')),
         ],
         responses: [new OA\Response(response: 200, description: 'Aggregated report groups.')],
     )]
@@ -62,6 +64,20 @@ class ReportController extends Controller
         }
         if ($request->filled('date_to')) {
             $query->whereDate('created_at', '<=', $request->date_to);
+        }
+
+        // Identity filter. Unidentified events (employee_id IS NULL — the
+        // vision pipeline returned UNKNOWN) must not be mixed into
+        // per-employee productivity metrics: they have no employee to
+        // attribute time to, they inflate totals and averages, and they
+        // surface in charts as a "#null" bucket. But they aren't noise
+        // either — an unidentified person in a work area is worth reporting
+        // on its own — so they're filterable in both directions rather than
+        // dropped outright.
+        if ($request->boolean('identified_only')) {
+            $query->whereNotNull('employee_id');
+        } elseif ($request->boolean('unidentified_only')) {
+            $query->whereNull('employee_id');
         }
 
         $selects = [];

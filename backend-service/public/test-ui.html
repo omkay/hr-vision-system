@@ -59,6 +59,10 @@
   .toast.err { background: #7f1d1d; }
   .checkbox-list { display: flex; flex-wrap: wrap; gap: 8px; }
   .checkbox-list label { display: flex; align-items: center; gap: 5px; font-size: 12px; border: 1px solid var(--border); padding: 5px 9px; border-radius: 6px; background: #fafafa; }
+  header .or-sep { font-size: 11px; color: #9ca3af; }
+  #tokenDisplay { display: none; align-items: center; gap: 6px; }
+  #tokenDisplay code { font-size: 11px; background: #1f2937; border: 1px solid #374151; padding: 4px 8px; border-radius: 6px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #tokenDisplay button { padding: 4px 10px; }
 </style>
 </head>
 <body>
@@ -69,7 +73,14 @@
   <input id="userName" placeholder="username" style="width:110px;">
   <input id="password" placeholder="password" type="password" style="width:110px;">
   <button onclick="doLogin()">Login</button>
+  <span class="or-sep">or</span>
+  <input id="tokenInput" placeholder="paste existing token" style="width:220px;">
+  <button onclick="loginWithToken()">Use Token</button>
   <span class="spacer"></span>
+  <span id="tokenDisplay">
+    <code id="tokenValue"></code>
+    <button onclick="copyToken()">Copy</button>
+  </span>
   <span id="authStatus">not logged in</span>
 </header>
 
@@ -142,11 +153,57 @@ async function doLogin() {
     const data = await api('/login', { method: 'POST', body: { user_name, password } });
     TOKEN = data.token;
     setAuthStatus('ok', 'logged in as ' + (data.user?.user_name || user_name));
+    showToken(TOKEN);
     toast('logged in');
     refreshAll();
   } catch (e) {
     setAuthStatus('err', 'login failed');
+    hideToken();
     toast('login failed: ' + e.message, true);
+  }
+}
+
+// Alternative to username+password: paste a token obtained elsewhere (e.g.
+// from a previous session, or handed to you by someone else who logged in)
+// and use it directly. Sanctum tokens aren't self-describing, so this is
+// validated by making one real authenticated call rather than trusting the
+// pasted value blindly — a stale/revoked/garbage token fails there with a
+// normal 401, same as any other request would.
+async function loginWithToken() {
+  const pasted = document.getElementById('tokenInput').value.trim();
+  if (!pasted) { toast('paste a token first', true); return; }
+  const previousToken = TOKEN;
+  TOKEN = pasted;
+  try {
+    await api('/zone/get');
+    setAuthStatus('ok', 'logged in via token');
+    showToken(TOKEN);
+    toast('logged in');
+    refreshAll();
+  } catch (e) {
+    TOKEN = previousToken;
+    setAuthStatus('err', 'invalid token');
+    hideToken();
+    toast('token rejected: ' + e.message, true);
+  }
+}
+
+function showToken(tok) {
+  document.getElementById('tokenValue').textContent = tok;
+  document.getElementById('tokenDisplay').style.display = 'flex';
+}
+
+function hideToken() {
+  document.getElementById('tokenDisplay').style.display = 'none';
+}
+
+async function copyToken() {
+  if (!TOKEN) return;
+  try {
+    await navigator.clipboard.writeText(TOKEN);
+    toast('token copied');
+  } catch (e) {
+    toast('copy failed — select it manually', true);
   }
 }
 
@@ -368,9 +425,10 @@ function renderCameras() {
   const el = document.getElementById('camerasTable');
   if (!el) return;
   if (!CAMERAS.length) { el.innerHTML = '<p class="muted">no cameras yet</p>'; return; }
-  el.innerHTML = `<table><thead><tr><th>ID</th><th>Name</th><th>Zone</th><th>Video</th><th></th></tr></thead><tbody>
+  el.innerHTML = `<table><thead><tr><th>ID</th><th>Name</th><th>Zone</th><th>Checkin?</th><th>Video</th><th></th></tr></thead><tbody>
     ${CAMERAS.map(c => `<tr>
       <td>${c.id}</td><td>${esc(c.name)}</td><td>${esc(c.zone?.name)}</td>
+      <td>${c.is_checkin ? '<span class="pill ok">yes</span>' : '<span class="muted">—</span>'}</td>
       <td>${c.video_url ? `<a href="${c.video_url}" target="_blank">view</a>` : '<span class="muted">none</span>'}</td>
       <td>
         <button class="btn" onclick="processCamera(${c.id})">process</button>
@@ -393,15 +451,18 @@ async function addCamera() {
   const name = document.getElementById('camName').value.trim();
   const zone_id = document.getElementById('camZone').value;
   const video = document.getElementById('camVideo').files[0];
+  const isCheckin = document.getElementById('camIsCheckin').checked;
   if (!name || !zone_id || !video) { toast('name, zone and video file are all required', true); return; }
   const fd = new FormData();
   fd.append('name', name);
   fd.append('zone_id', zone_id);
   fd.append('video', video);
+  fd.append('is_checkin', isCheckin ? '1' : '0');
   try {
     await api('/camera/add', { method: 'POST', body: fd, isForm: true });
     document.getElementById('camName').value = '';
     document.getElementById('camVideo').value = '';
+    document.getElementById('camIsCheckin').checked = false;
     toast('camera added');
     loadCameras();
   } catch (e) { toast('add camera failed: ' + e.message, true); }
@@ -716,11 +777,18 @@ async function submitSequence() {
   if (!requireAuth()) return;
   const video = document.getElementById('sequenceCheckinVideo').files[0];
   const ids = [...document.querySelectorAll('#sequenceCameraList input:checked')].map(i => Number(i.value));
-  if (!video) { toast('pick a checkin video', true); return; }
   if (!ids.length) { toast('select at least one zone camera', true); return; }
+  // No video required anymore — if left blank, the backend automatically
+  // uses every camera flagged is_checkin=true instead (see "Checkin camera"
+  // checkbox on the Cameras tab). Only error out if there's truly no way
+  // for the backend to figure out a checkin source at all.
+  if (!video && !CAMERAS.some(c => c.is_checkin)) {
+    toast('pick a checkin video, or flag at least one camera as "Checkin camera" on the Cameras tab', true);
+    return;
+  }
 
   const fd = new FormData();
-  fd.append('checkin_video', video);
+  if (video) fd.append('checkin_video', video);
   ids.forEach(id => fd.append('camera_ids[]', id));
   const opts = writeVideoOptions('sequence');
   fd.append('write_video', opts.write_video ? '1' : '0');
@@ -877,9 +945,10 @@ function buildLayout() {
         <div class="field"><label>Name *</label><input id="camName"></div>
         <div class="field"><label>Zone *</label><select id="camZone" class="zone-select"></select></div>
         <div class="field"><label>Video file *</label><input id="camVideo" type="file" accept="video/mp4,video/quicktime,.mp4,.mov,.avi,.mkv"></div>
+        <div class="field"><label><input id="camIsCheckin" type="checkbox"> Checkin camera</label></div>
         <button class="btn" onclick="addCamera()">add camera</button>
       </div>
-      <small class="hint">Backend accepts mp4/mov/avi/mkv, up to 500MB.</small>
+      <small class="hint">Backend accepts mp4/mov/avi/mkv, up to 500MB. "Checkin camera" cameras are auto-used by /process-sequence when checkin_video/checkin_camera_id are left blank — multiple can be flagged (e.g. several entrances), and all of them get processed before any zone camera runs.</small>
     </div>
     <div class="card">
       <h2>Cameras <button class="btn ghost" style="float:right" onclick="loadCameras()">refresh</button></h2>
@@ -975,8 +1044,9 @@ function buildLayout() {
         gallery in vision-service), then processes the selected zone cameras against that same day — so
         cross-camera ReID matching prefers today's actual appearance over the static enrollment gallery.</small>
       <div class="row" style="margin-top:10px">
-        <div class="field"><label>Checkin video *</label><input id="sequenceCheckinVideo" type="file" accept="video/mp4,video/quicktime,.mp4,.mov,.avi,.mkv"></div>
+        <div class="field"><label>Checkin video (optional)</label><input id="sequenceCheckinVideo" type="file" accept="video/mp4,video/quicktime,.mp4,.mov,.avi,.mkv"></div>
       </div>
+      <small class="hint">Leave blank to auto-use every camera flagged "Checkin camera" on the Cameras tab instead of uploading a video here.</small>
       <div style="margin-top:10px">
         <label class="muted" style="display:block;margin-bottom:6px">Zone cameras to process</label>
         <div class="checkbox-list" id="sequenceCameraList"></div>

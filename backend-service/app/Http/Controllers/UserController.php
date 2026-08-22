@@ -18,7 +18,7 @@ class UserController extends Controller
             content: new OA\JsonContent(
                 required: ['user_name', 'password'],
                 properties: [
-                    new OA\Property(property: 'user_name', type: 'string', example: 'it'),
+                    new OA\Property(property: 'user_name', type: 'string', example: 'ceo'),
                     new OA\Property(property: 'password', type: 'string', format: 'password', example: 'It123#321'),
                 ],
             ),
