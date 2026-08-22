@@ -6,9 +6,9 @@ from typing import List
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from ..gallery import enroll_person
+from ..gallery import delete_person, enroll_person
 from ..models import get_face_embedder, get_reid_embedder
-from ..schemas import EnrollResponse
+from ..schemas import DeleteEnrollmentResponse, EnrollResponse
 
 router = APIRouter(prefix="/enroll", tags=["enroll"])
 
@@ -77,3 +77,35 @@ def enroll(req: EnrollRequest):
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(400, str(e))
     return summary
+
+
+@router.delete(
+    "/{name}",
+    response_model=DeleteEnrollmentResponse,
+    summary="Delete an employee's enrollment and fingerprints",
+    response_description="What was actually removed.",
+)
+def delete_enrollment(name: str):
+    """Remove an employee from the identity gallery entirely.
+
+    Call this when the employee is deleted upstream (Hr_SmartPay /
+    backend-service `DELETE /employees/delete/{id}` does this automatically).
+    Three stores are cleaned, and all three matter:
+
+    - `gallery/<name>/` enrollment images — otherwise any gallery rebuild
+      silently re-enrolls the deleted employee from disk.
+    - their entry in `gallery.npz` — the banks used for matching.
+    - their body fingerprints in `gallery/daily/*.npz`, for **every** date on
+      record. This is the one that bites: `match_reid` prefers the daily bank
+      over enrollment, so a deleted employee's fingerprint would keep winning
+      matches and attributing activity events to an ID that no longer
+      resolves to anyone.
+
+    **Idempotent** — deleting someone who was never enrolled returns 200 with
+    everything reported as `false`, not an error, since an employee record can
+    exist upstream without ever having had photos uploaded.
+    """
+    try:
+        return delete_person(name)
+    except ValueError as e:
+        raise HTTPException(400, str(e))

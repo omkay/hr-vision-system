@@ -25,12 +25,15 @@ instance, so rotation is left as an operational concern if that changes.
 from __future__ import annotations
 
 import dataclasses
+import logging
 from pathlib import Path
 from typing import Dict
 
 import numpy as np
 
-from .config import GALLERY_DIR
+from .config import GALLERY_DIR, REID_PREPROC_VERSION
+
+log = logging.getLogger(__name__)
 
 DAILY_GALLERY_DIR = GALLERY_DIR / "daily"
 DAILY_GALLERY_DIR.mkdir(parents=True, exist_ok=True)
@@ -54,6 +57,7 @@ class DailyGallery:
         np.savez(
             _path_for(self.date),
             reid_keys=np.array(list(self.reid_banks.keys())),
+            preproc_version=np.array([REID_PREPROC_VERSION]),
             **{f"reid_{k}": v for k, v in self.reid_banks.items()},
         )
 
@@ -63,6 +67,21 @@ class DailyGallery:
         if not p.exists():
             return DailyGallery(date=date, reid_banks={})
         z = np.load(p, allow_pickle=True)
+        version = int(z["preproc_version"][0]) if "preproc_version" in z else 1
+        if version != REID_PREPROC_VERSION:
+            # Unlike the static gallery, these can't be rebuilt here — the
+            # source crops came from a checkin video and were never kept.
+            # Returning them anyway would be worse than returning nothing:
+            # match_reid prefers the daily bank over the enrollment bank, so
+            # a stale daily file would actively override a good one. Re-run
+            # POST /checkin/video-multi for this date to regenerate.
+            log.warning(
+                "daily fingerprints for %s were built with ReID preprocessing "
+                "v%d (current: v%d) — ignoring them and falling back to the "
+                "enrollment gallery. Re-run /checkin/video-multi for this date.",
+                date, version, REID_PREPROC_VERSION,
+            )
+            return DailyGallery(date=date, reid_banks={})
         return DailyGallery(
             date=date,
             reid_banks={k: z[f"reid_{k}"] for k in z["reid_keys"]},
@@ -90,3 +109,36 @@ def save_fingerprint(date: str, employee_id: str, reid_vecs: np.ndarray) -> None
 
 def load_daily_gallery(date: str) -> DailyGallery:
     return DailyGallery.load(date)
+
+
+def remove_employee(employee_id: str) -> list:
+    """Delete *employee_id*'s fingerprints from EVERY day on record.
+
+    Called when an employee is deleted upstream (see the vision service's
+    DELETE /enroll/{name}). Without this, a deleted employee's body
+    fingerprints keep sitting in gallery/daily/<date>.npz and stay in the
+    matching pool: since match_reid prefers the daily bank, a person who no
+    longer exists in HR can still win a match and have activity events
+    attributed to an ID that resolves to nobody. Scans all dates, not just
+    today, because past dates are re-processed for reports and would
+    otherwise resurrect the stale identity.
+
+    Returns the list of dates that were modified.
+    """
+    touched = []
+    for path in sorted(DAILY_GALLERY_DIR.glob("*.npz")):
+        date = path.stem
+        dg = DailyGallery.load(date)
+        if employee_id not in dg.reid_banks:
+            continue
+        del dg.reid_banks[employee_id]
+        if dg.reid_banks:
+            dg.save()
+        else:
+            # save() is a no-op on an empty bank dict, which would leave the
+            # old file (still containing this employee) in place.
+            path.unlink(missing_ok=True)
+        touched.append(date)
+    if touched:
+        log.info("removed daily fingerprints for %r from %s", employee_id, touched)
+    return touched

@@ -54,7 +54,38 @@ class EnrollResponse(BaseModel):
     body_images_copied: int = Field(..., description="Number of body image files copied into the gallery.")
     face_embeddings_used: int = Field(..., description="Number of face embeddings actually computed and stored.")
     body_embeddings_used: int = Field(..., description="Number of body (ReID) embeddings actually computed and stored.")
+    skipped_sources: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Images that could not be fetched and were skipped. Enrollment no longer "
+            "fails wholesale when one source is dead — an upstream photo row can "
+            "outlive its file, and one broken URL used to abort the whole employee's "
+            "enrollment. Also compare `face_embeddings_used` against "
+            "`face_images_copied`: a copied photo with no detectable face contributes "
+            "nothing, and an employee with zero usable face embeddings can never be "
+            "face-identified at checkin."
+        ),
+    )
     total_employees: int = Field(..., description="Total number of employees now in the gallery.")
+
+
+class DeleteEnrollmentResponse(BaseModel):
+    """What was removed when deleting an employee's enrollment."""
+    name: str = Field(..., description="Employee ID that was deleted.")
+    images_removed: bool = Field(
+        ..., description="Whether `gallery/<name>/` existed and was deleted.",
+    )
+    gallery_entry_removed: bool = Field(
+        ..., description="Whether the employee had an entry in gallery.npz.",
+    )
+    daily_fingerprint_dates_cleared: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Dates (YYYY-MM-DD) whose daily body-fingerprint file contained this "
+            "employee and was rewritten without them. Empty when they had no "
+            "fingerprints on record."
+        ),
+    )
 
 
 # ── Checkin ───────────────────────────────────────────────────────────────────
@@ -121,6 +152,17 @@ class CheckinVideoMultiResponse(BaseModel):
             "instead of the static enrollment gallery — see IdentityFuser.match_reid."
         ),
     )
+    fingerprinted: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Employees whose daily body fingerprint was actually saved from this scan. "
+            "Narrower than `matches` on purpose: only tracks confirmed by a real face "
+            "match, with quality-passing crops, are allowed to seed the day's ReID "
+            "reference — a body-only guess written here would propagate to every zone "
+            "camera for the rest of the day. If an employee appears in `matches` but "
+            "not here, zone cameras will fall back to the enrollment gallery for them."
+        ),
+    )
     frames_read: int = Field(..., description="Total frames pulled from the source.")
     frames_processed: int = Field(..., description="Frames actually run through detection/tracking (after stride).")
 
@@ -179,9 +221,62 @@ class AnnotatedVideoRef(BaseModel):
     )
 
 
+class CameraDiagnostics(BaseModel):
+    """Per-camera counters explaining how a run reached its event count.
+
+    "This camera produced no events" has at least six distinct causes, each
+    with a different fix: the video never opened, no frames were read, nobody
+    was detected, people were detected but never tracked, tracked but never
+    identified, or identified but every event fell under its min-duration
+    threshold. These fields separate them without a re-run.
+    """
+    camera_id: str
+    frames_read: int = Field(..., description="Frames pulled from the video (before stride).")
+    frames_processed: int = Field(..., description="Frames actually run through detection.")
+    video_fps: float = Field(..., description="Source frame rate as reported by the container.")
+    person_detections: int = Field(
+        ...,
+        description=(
+            "Total person detections with a track ID across all frames. **Zero here "
+            "means detection or tracking failed** — identity, thresholds and zones are "
+            "all downstream and can't be the cause."
+        ),
+    )
+    quality_rejected_crops: int = Field(
+        ..., description="Crops dropped by the quality gate before matching (quality.py)."
+    )
+    distinct_tracks: int = Field(..., description="Distinct track IDs seen.")
+    identified_employees: List[str] = Field(
+        default_factory=list, description="Employees committed to at least one track."
+    )
+    last_frame_with_a_person: int = Field(
+        ...,
+        description=(
+            "Last processed frame index containing any person, or -1. Compare against "
+            "`frames_processed`: a large gap means detections stopped partway through "
+            "the video rather than the video being short."
+        ),
+    )
+    events_after_min_duration: int = Field(
+        ...,
+        description=(
+            "Events surviving EventEngine's min-duration filter (presence 2s, phone 2s, "
+            "working 3s, interaction 4s). Non-zero detections with zero events here "
+            "means people were seen too briefly, not missed."
+        ),
+    )
+    identity_enabled: bool = Field(
+        ..., description="False when no gallery was loaded — every event would be UNKNOWN."
+    )
+
+
 class JobResultPayload(BaseModel):
     events: List[EventRecord]
     event_count: int = Field(..., description="Total number of events returned.")
+    diagnostics: List[CameraDiagnostics] = Field(
+        default_factory=list,
+        description="One entry per camera — see CameraDiagnostics.",
+    )
     annotated_videos: List[AnnotatedVideoRef] = Field(
         default_factory=list,
         description="One entry per camera with bounding boxes/zones/labels drawn in — only populated when `write_video=true`.",
@@ -201,6 +296,16 @@ class JobStatusResponse(BaseModel):
     finished_at: Optional[float] = Field(None, description="Unix timestamp when the job completed.")
     result: Optional[Any] = Field(
         None, description="Job result payload — present when `status` is `done`."
+    )
+    partial_events: List[EventRecord] = Field(
+        default_factory=list,
+        description=(
+            "Events finalized so far, updated live while the job is still "
+            "`running` — appended to only, never rewritten, so callers can "
+            "poll repeatedly and just look at new entries past the length "
+            "they already saw. By the time `status` is `done` this already "
+            "equals `result.events` in content (order may differ)."
+        ),
     )
 
 

@@ -11,7 +11,7 @@ from ..config import (
     DEFAULT_DET_CONF, DEFAULT_DET_IOU, DEFAULT_FACE_THR, DEFAULT_MAX_FRAMES,
     DEFAULT_REID_THR, DEFAULT_STRIDE, GALLERY_PATH,
 )
-from ..gallery import EmployeeGallery
+from ..gallery import EmployeeGallery, get_gallery
 from ..pipeline import checkin, checkin_video, checkin_video_multi
 from ..schemas import CheckinResponse, CheckinVideoMultiResponse, CheckinVideoResponse
 from ..storage import is_remote, _is_stream
@@ -127,9 +127,13 @@ class CheckinVideoRequest(BaseModel):
 
 
 def _load_gallery() -> EmployeeGallery:
-    if not GALLERY_PATH.exists():
+    # get_gallery() (not EmployeeGallery.load) so a gallery embedded with
+    # outdated ReID preprocessing is re-embedded instead of silently
+    # depressing every similarity score — see gallery.get_gallery().
+    gallery = get_gallery()
+    if gallery is None:
         raise HTTPException(400, "No gallery enrolled yet. Call POST /enroll first.")
-    return EmployeeGallery.load(GALLERY_PATH)
+    return gallery
 
 
 @router.post(
@@ -239,6 +243,18 @@ class CheckinVideoMultiRequest(BaseModel):
         ),
     )
 
+    debug_identity: bool = Field(
+        False,
+        description=(
+            "If true, write `outputs/checkin_<video>_identity_debug.csv` — one row per "
+            "person per processed frame with the crop-quality verdict, face/ReID score "
+            "and margin, assigned name and vote score. Start here when zone cameras "
+            "return UNKNOWN: this scan is where the face is supposed to be recognised "
+            "and where the day's body fingerprints come from, so a failure here "
+            "explains every downstream failure."
+        ),
+    )
+
     model_config = {
         "json_schema_extra": {
             "example": {"source": "/data/lobby_camera.mp4"},
@@ -292,6 +308,7 @@ def checkin_video_multi_endpoint(req: CheckinVideoMultiRequest):
             det_conf=req.det_conf,
             det_iou=req.det_iou,
             session_date=req.session_date,
+            debug_identity=req.debug_identity,
         )
     except RuntimeError as e:
         raise HTTPException(400, str(e))

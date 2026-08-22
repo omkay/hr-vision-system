@@ -5,7 +5,7 @@ import dataclasses
 import json
 import math
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 import pandas as pd
 from shapely.geometry import Polygon, Point, box as shapely_box
@@ -93,7 +93,7 @@ class EventEngine:
                  proximity_px=180, phone_iou_thr=0.05, phone_overlap_thr=0.5,
                  work_device_iou_thr=0.02, work_device_overlap_thr=0.25,
                  presence_min_s=2, phone_min_s=2, working_min_s=3,
-                 interaction_min_s=4):
+                 interaction_min_s=4, on_event: Optional[Callable[[dict], None]] = None):
         self.fps = fps
         self.zones = zones
         self.grace_frames = int(grace_s * fps)
@@ -107,6 +107,11 @@ class EventEngine:
         self.open: Dict[str, Event] = {}
         self.last_seen: Dict[str, int] = {}
         self.all: List[Event] = []
+        # Called the instant an event is finalized (closed or flushed),
+        # already passed through the same min-duration filter to_dataframe()
+        # applies — so a caller streaming these out never sees an event that
+        # later fails to make it into the final result. See pipeline.py.
+        self.on_event = on_event
 
     def _key(self, kind, *parts):
         return kind + "::" + "::".join(str(p) for p in parts)
@@ -120,13 +125,42 @@ class EventEngine:
             )
         self.last_seen[key] = fidx
 
+    def _event_row(self, ev: Event) -> Optional[dict]:
+        """Build the flat dict shape used both by to_dataframe() rows and by
+        on_event() — returns None if the event doesn't meet its type's
+        minimum duration (same rule to_dataframe() applies), so a dropped
+        event is dropped consistently in both places."""
+        if ev.duration_s is None:
+            return None
+        if ev.duration_s < self.mins.get(ev.event_type, 0):
+            return None
+        return {
+            "employee_id": ev.employee_id,
+            "event_type":  ev.event_type,
+            "start_s":     round(ev.start_ts, 2),
+            "end_s":       round(ev.end_ts, 2),
+            "duration_s":  ev.duration_s,
+            **ev.details,
+        }
+
+    def _finalize(self, ev: Event) -> None:
+        """Common tail of closing an event, whether via grace-period timeout
+        (_close_stale) or end-of-video flush() — appends to self.all (kept
+        for to_dataframe()) and, if wired up, emits it immediately via
+        on_event() for streaming consumers."""
+        self.all.append(ev)
+        if self.on_event is not None:
+            row = self._event_row(ev)
+            if row is not None:
+                self.on_event(row)
+
     def _close_stale(self, fidx):
         for key in list(self.open.keys()):
             if fidx - self.last_seen[key] > self.grace_frames:
                 ev = self.open.pop(key)
                 ev.end_frame = self.last_seen[key]
                 ev.end_ts = ev.end_frame / self.fps
-                self.all.append(ev)
+                self._finalize(ev)
                 del self.last_seen[key]
 
     @staticmethod
@@ -213,25 +247,12 @@ class EventEngine:
         for key, ev in list(self.open.items()):
             ev.end_frame = self.last_seen.get(key, fidx)
             ev.end_ts = ev.end_frame / self.fps
-            self.all.append(ev)
+            self._finalize(ev)
         self.open.clear()
         self.last_seen.clear()
 
     def to_dataframe(self) -> pd.DataFrame:
-        rows = []
-        for ev in self.all:
-            if ev.duration_s is None:
-                continue
-            if ev.duration_s < self.mins.get(ev.event_type, 0):
-                continue
-            rows.append({
-                "employee_id": ev.employee_id,
-                "event_type":  ev.event_type,
-                "start_s":     round(ev.start_ts, 2),
-                "end_s":       round(ev.end_ts, 2),
-                "duration_s":  ev.duration_s,
-                **ev.details,
-            })
+        rows = [r for r in (self._event_row(ev) for ev in self.all) if r is not None]
         if not rows:
             return pd.DataFrame(columns=["employee_id", "event_type",
                                          "start_s", "end_s", "duration_s"])

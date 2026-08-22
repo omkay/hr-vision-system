@@ -15,15 +15,19 @@ import pandas as pd
 from .config import (
     DEFAULT_ANNOTATE_OUTPUT_FPS, DEFAULT_ANNOTATE_STRIDE, DEFAULT_DET_CONF,
     DEFAULT_DET_IOU, DEFAULT_FACE_THR, DEFAULT_FUSE_WIN, DEFAULT_MAX_FRAMES,
-    DEFAULT_PROX_PX, DEFAULT_REID_THR, DEFAULT_STRIDE, DETECTION_MAX_DIM,
-    OUT_DIR,
+    DEFAULT_PROX_PX, DEFAULT_REID_MARGIN, DEFAULT_REID_THR, DEFAULT_STRIDE,
+    DETECTION_MAX_DIM,
+    IDENTITY_CROPS_AT_NATIVE_RES, OUT_DIR,
 )
+from .quality import normalize_illumination
 from . import daily_gallery as daily_gallery_store
 from .events_engine import EventEngine, Zone, load_zones_for_video, filter_objects_near_people
 from .schemas import ZoneDefinition
 from .gallery import EmployeeGallery
 from .identity import IdentityFuser, UNKNOWN_LABEL
-from .models import get_detector, get_face_embedder, get_reid_embedder
+from .models import (
+    get_detector, get_face_embedder, get_reid_embedder, serialized_tracking,
+)
 from .storage import resolve_source
 
 log = logging.getLogger(__name__)
@@ -110,16 +114,19 @@ RELINK_MAX_DIST_PX = 200
 def _find_relink_candidate(new_bbox, processed_idx, fps, track_last_seen, committed):
     """Find a recently-vacated committed track near *new_bbox*, if any.
 
-    This is a heuristic, not authoritative — in a crowded scene two
-    different people could plausibly swap positions within the gap/distance
-    window, mis-linking one to the other's identity. The short default gap
-    (2s) and tight distance keep that risk low without disabling the whole
-    thing for everyone; retune RELINK_MAX_GAP_S/RELINK_MAX_DIST_PX if a
-    particular camera's footage misbehaves.
+    Returns (donor_track_id, name) or None. Geometry only — the caller MUST
+    additionally pass the result through IdentityFuser.can_relink(), which
+    verifies that the new crop actually resembles the donor track's last
+    known appearance and that the donor's identity isn't already visible on
+    another live track. Proximity on its own is at its least reliable
+    exactly where it fires most often (doorways, corners, the check-in
+    queue), because a stream of different people pass through the same few
+    hundred pixels within seconds of each other — which is how a corner
+    detection ended up wearing someone else's employee ID.
     """
     max_gap_frames = RELINK_MAX_GAP_S * fps
     nx, ny = _bbox_center(new_bbox)
-    best_name, best_dist = None, RELINK_MAX_DIST_PX
+    best, best_dist = None, RELINK_MAX_DIST_PX
     for tid, name in committed.items():
         seen = track_last_seen.get(tid)
         if seen is None:
@@ -132,8 +139,75 @@ def _find_relink_candidate(new_bbox, processed_idx, fps, track_last_seen, commit
         dist = ((nx - lx) ** 2 + (ny - ly) ** 2) ** 0.5
         if dist < best_dist:
             best_dist = dist
-            best_name = name
-    return best_name
+            best = (tid, name)
+    return best
+
+
+def _resolve_identities(fuser, person_dets, processed_idx, fps,
+                        track_last_seen, frame_w, frame_h):
+    """Resolve every person in one frame to a label, in three phases.
+
+    Phase 1 (observe) gates each crop on quality and scores it against the
+    gallery without deciding anything. Phase 2 attempts verified track
+    re-linking for brand-new track IDs. Phase 3 solves the whole frame as a
+    single assignment problem, so "one employee appears at most once per
+    frame" holds by construction.
+
+    This ordering is what replaced the old post-hoc conflict handler
+    (_resolve_same_frame_conflicts → IdentityFuser.revoke), which detected
+    the impossible state after the fact and dealt with it by blacklisting
+    the contested name for the remainder of the video — permanently
+    un-identifying a correctly-matched employee because some other track
+    had a false positive.
+
+    Returns ({track_id: employee_id}, [Observation, ...]) — the observations
+    are handed back so callers can reuse the scores/quality verdict already
+    computed here (e.g. checkin's daily-fingerprint crop selection) instead
+    of re-running the models on the same crop.
+    """
+    observations = []
+    bboxes = {}
+    for d, crop in person_dets:
+        obs = fuser.observe(d["track_id"], crop, d["bbox"], frame_w, frame_h)
+        observations.append(obs)
+        bboxes[d["track_id"]] = d["bbox"]
+
+    live_ids = [o.track_id for o in observations]
+    for obs in observations:
+        tid = obs.track_id
+        if tid in track_last_seen or tid in fuser.committed or not obs.usable:
+            continue
+        candidate = _find_relink_candidate(
+            bboxes[tid], processed_idx, fps, track_last_seen, fuser.committed,
+        )
+        if candidate is not None and fuser.can_relink(obs, candidate[0], live_ids):
+            fuser.adopt(tid, candidate[1])
+
+    return fuser.resolve_frame(observations, frame_idx=processed_idx), observations
+
+
+def _write_identity_debug(rows: list, video_stem: str,
+                          camera_id: str = "") -> Optional[Path]:
+    """Dump per-frame identity decisions to CSV for threshold tuning.
+
+    The thresholds in config.py were arrived at by trial and error (0.75 →
+    0.60 → 0.65) because no similarity score was ever recorded — every
+    retune was a guess evaluated by re-watching annotated video. With this,
+    a run produces the actual score distribution for the footage in
+    question: what the true match scored, what the false positive scored,
+    how large the margins were, and which crops the quality gate dropped.
+    """
+    if not rows:
+        return None
+    # Remote sources are downloaded to a random temp file, so the video stem
+    # is something like "tmp3i07t5qo" — useless for telling which camera a
+    # CSV belongs to. Lead with the camera_id when there is one.
+    label = f"cam{camera_id}" if camera_id.isdigit() else camera_id
+    prefix = f"{label}_" if label else ""
+    path = OUT_DIR / f"{prefix}{video_stem}_identity_debug.csv"
+    pd.DataFrame(rows).to_csv(path, index=False)
+    log.info("identity debug log written: %s (%d rows)", path, len(rows))
+    return path
 
 
 def _compress_video(path: Path) -> Path:
@@ -177,6 +251,31 @@ def _scaled_size(width: int, height: int, scale: float) -> tuple[int, int]:
     return max(1, round(width * scale)), max(1, round(height * scale))
 
 
+def _identity_crop(native_frame, scaled_frame, bbox, det_scale: float):
+    """Crop a person for identity matching, at the best resolution available.
+
+    Detection runs on a frame downscaled to DETECTION_MAX_DIM, which is fine
+    for YOLO (it resizes internally regardless) but wasteful for identity: on
+    4K footage that left people 111-138 px tall, and OSNet then UPSCALES to
+    its 256x128 input, so a third of the embedding's input is interpolation.
+    Face matching suffers the same way, and worse — InsightFace needs real
+    facial detail, not a smoothed 30 px face.
+
+    The bbox is in the scaled coordinate space (everything downstream —
+    zones, annotated video — uses it), so it is mapped back up by
+    1/det_scale to slice the original frame. No extra model inference, just a
+    different slice.
+    """
+    if not IDENTITY_CROPS_AT_NATIVE_RES or det_scale == 1.0 or native_frame is None:
+        h, w = scaled_frame.shape[:2]
+        x1, y1, x2, y2 = bbox
+        return scaled_frame[max(0, y1):min(h, y2), max(0, x1):min(w, x2)]
+
+    h, w = native_frame.shape[:2]
+    x1, y1, x2, y2 = (int(round(v / det_scale)) for v in bbox)
+    return native_frame[max(0, y1):min(h, y2), max(0, x1):min(w, x2)]
+
+
 def run_pipeline(
     video_path: str,
     gallery: Optional[EmployeeGallery] = None,
@@ -187,6 +286,7 @@ def run_pipeline(
     det_iou: float = DEFAULT_DET_IOU,
     face_thr: float = DEFAULT_FACE_THR,
     reid_thr: float = DEFAULT_REID_THR,
+    reid_margin: float = DEFAULT_REID_MARGIN,
     fuse_win: int = DEFAULT_FUSE_WIN,
     stride: int = DEFAULT_STRIDE,
     max_frames: int = DEFAULT_MAX_FRAMES,
@@ -194,7 +294,10 @@ def run_pipeline(
     write_video: bool = False,
     annotate_stride: int = DEFAULT_ANNOTATE_STRIDE,
     progress: Optional[Callable[[int, int], None]] = None,
+    on_event: Optional[Callable[[dict], None]] = None,
     session_date: Optional[str] = None,
+    debug_identity: bool = False,
+    stats_out: Optional[dict] = None,
 ) -> Tuple[pd.DataFrame, Optional[Path]]:
     """Process a video and return (events_df, annotated_video_path).
 
@@ -209,20 +312,27 @@ def run_pipeline(
     every N *processed* frames to the output, to keep the annotated video
     reviewable-by-eye without ballooning file size. See config.py's
     DEFAULT_ANNOTATE_STRIDE for the reasoning.
+
+    on_event: optional callback invoked the instant each event is finalized
+    (mid-video, well before this function returns) — see EventEngine's
+    on_event param. Lets callers surface activity events as they're
+    detected rather than only once the whole video has been processed.
     """
     with resolve_source(video_path) as local_path:
         return _run_pipeline_local(
             local_path, gallery,
             zones=zones, camera_id=camera_id,
             det_conf=det_conf, det_iou=det_iou,
-            face_thr=face_thr, reid_thr=reid_thr,
+            face_thr=face_thr, reid_thr=reid_thr, reid_margin=reid_margin,
             fuse_win=fuse_win, stride=stride,
             max_frames=max_frames, prox_px=prox_px,
             write_video=write_video, annotate_stride=annotate_stride,
-            progress=progress, session_date=session_date,
+            progress=progress, on_event=on_event, session_date=session_date,
+            debug_identity=debug_identity, stats_out=stats_out,
         )
 
 
+@serialized_tracking
 def _run_pipeline_local(
     video_path: str,
     gallery: Optional[EmployeeGallery] = None,
@@ -233,6 +343,7 @@ def _run_pipeline_local(
     det_iou: float = DEFAULT_DET_IOU,
     face_thr: float = DEFAULT_FACE_THR,
     reid_thr: float = DEFAULT_REID_THR,
+    reid_margin: float = DEFAULT_REID_MARGIN,
     fuse_win: int = DEFAULT_FUSE_WIN,
     stride: int = DEFAULT_STRIDE,
     max_frames: int = DEFAULT_MAX_FRAMES,
@@ -240,27 +351,30 @@ def _run_pipeline_local(
     write_video: bool = False,
     annotate_stride: int = DEFAULT_ANNOTATE_STRIDE,
     progress: Optional[Callable[[int, int], None]] = None,
+    on_event: Optional[Callable[[dict], None]] = None,
     session_date: Optional[str] = None,
+    debug_identity: bool = False,
+    stats_out: Optional[dict] = None,
 ) -> Tuple[pd.DataFrame, Optional[Path]]:
     """Internal: run pipeline on a guaranteed-local path."""
     vp = Path(video_path)
     if not vp.exists():
         raise FileNotFoundError(f"Video not found: {video_path}")
 
+    # Tracker reset + exclusive access are handled by @serialized_tracking
+    # on this function — see models.tracking_session() for why both matter.
     detector = get_detector()
     face_emb = get_face_embedder()
     reid_emb = get_reid_embedder()
-
-    # Reset ByteTrack state so this video starts with clean track IDs.
-    detector.reset_tracker()
 
     daily = daily_gallery_store.load_daily_gallery(session_date or _date.today().isoformat())
 
     fuser = None
     if gallery is not None and len(gallery.names) > 0:
         fuser = IdentityFuser(gallery, face_emb, reid_emb,
-                              face_thr=face_thr, reid_thr=reid_thr, window=fuse_win,
-                              daily_gallery=daily)
+                              face_thr=face_thr, reid_thr=reid_thr,
+                              reid_margin=reid_margin, window=fuse_win,
+                              daily_gallery=daily, debug=debug_identity)
 
     cap = cv2.VideoCapture(str(vp))
     if not cap.isOpened():
@@ -306,12 +420,30 @@ def _run_pipeline_local(
         # No zones in the request — check zones_config.json, else full frame.
         active_zones = load_zones_for_video(vp.name, frame_size=(W, H))
 
-    engine = EventEngine(fps=fps / stride, zones=active_zones, proximity_px=prox_px)
+    def _emit(row: dict, _camera_id=camera_id):
+        # The final DataFrame gets `camera_id` inserted as a column only
+        # after the whole video is processed (see df.insert(...) below) —
+        # tag it here too so a row streamed out mid-video already has the
+        # same shape as one read from the final result.
+        if on_event is not None:
+            on_event({"camera_id": _camera_id, **row})
+
+    engine = EventEngine(fps=fps / stride, zones=active_zones, proximity_px=prox_px,
+                         on_event=_emit if on_event is not None else None)
 
     idx = processed = 0
     # track_id -> (processed_idx, bbox) for every person seen so far, used
     # to feed _find_relink_candidate() when a brand-new track_id shows up.
     track_last_seen: dict = {}
+    # Per-video counters, surfaced to the caller (see stats_out). Without
+    # these, "this camera returned 0 events" is indistinguishable between:
+    # the video never opened, no frames were read, nobody was detected, people
+    # were detected but never tracked, tracked but never identified, or
+    # identified but every event fell under its min-duration threshold. Each
+    # has a different fix, and guessing between them wastes a full re-run.
+    n_person_dets = 0
+    n_quality_rejects = 0
+    last_frame_with_person = -1
     try:
         while processed < max_frames:
             ok, frame = cap.read()
@@ -320,34 +452,47 @@ def _run_pipeline_local(
             if idx % stride != 0:
                 idx += 1
                 continue
+            # Keep the original around: detection uses the downscaled frame,
+            # identity uses full resolution (see _identity_crop).
+            frame_native = frame
             if det_scale != 1.0:
                 frame = cv2.resize(frame, (W, H), interpolation=cv2.INTER_AREA)
             dets = detector.track(frame, conf=det_conf, iou=det_iou)
-            people, phones, laptops, monitors = [], [], [], []
+            person_dets, phones, laptops, monitors = [], [], [], []
             for d in dets:
                 if d["cls_name"] == "person":
-                    x1, y1, x2, y2 = d["bbox"]
-                    x1, y1 = max(0, x1), max(0, y1)
-                    x2, y2 = min(W, x2), min(H, y2)
-                    crop = frame[y1:y2, x1:x2]
-                    name = UNKNOWN_LABEL
-                    track_id = d["track_id"]
-                    if fuser is not None and crop.size > 0:
-                        if track_id not in track_last_seen and track_id not in fuser.committed:
-                            candidate = _find_relink_candidate(
-                                d["bbox"], processed, engine.fps, track_last_seen, fuser.committed,
-                            )
-                            if candidate is not None:
-                                fuser.adopt(track_id, candidate)
-                        name = fuser.update(track_id, crop)
-                    people.append({**d, "employee_id": name})
-                    track_last_seen[track_id] = (processed, d["bbox"])
+                    crop = _identity_crop(frame_native, frame, d["bbox"], det_scale)
+                    if crop.size > 0:
+                        person_dets.append((d, crop))
                 elif d["cls_name"] == "cell phone":
                     phones.append(d)
                 elif d["cls_name"] == "laptop":
                     laptops.append(d)
                 elif d["cls_name"] == "monitor":
                     monitors.append(d)
+
+            # Identity is resolved for the whole frame at once (see
+            # _resolve_identities) rather than per track as detections are
+            # iterated — one employee can't be two people in one frame, and
+            # that constraint can only be honoured with every track's scores
+            # on the table simultaneously.
+            labels: dict = {}
+            n_person_dets += len(person_dets)
+            if person_dets:
+                last_frame_with_person = processed
+            if fuser is not None:
+                labels, observations = _resolve_identities(
+                    fuser, person_dets, processed, engine.fps,
+                    track_last_seen, W, H,
+                )
+                n_quality_rejects += sum(1 for o in observations if not o.usable)
+            people = [
+                {**d, "employee_id": labels.get(d["track_id"], UNKNOWN_LABEL)}
+                for d, _ in person_dets
+            ]
+            for d, _ in person_dets:
+                track_last_seen[d["track_id"]] = (processed, d["bbox"])
+
             engine.update(processed, people, phones, laptops, monitors)
             if writer is not None and processed % annotate_stride == 0:
                 # Draw only phone/laptop/monitor detections that are actually
@@ -375,10 +520,32 @@ def _run_pipeline_local(
     if annotated_path is not None:
         annotated_path = _compress_video(annotated_path)
 
+    if fuser is not None and debug_identity:
+        _write_identity_debug(fuser.debug_rows, vp.stem, camera_id)
+
     engine.flush(processed)
     df = engine.to_dataframe()
     if not df.empty:
         df.insert(0, "camera_id", camera_id)
+
+    if stats_out is not None:
+        identified = {n for n in (fuser.committed.values() if fuser else ()) 
+                      if n != UNKNOWN_LABEL}
+        stats_out.update({
+            "camera_id": camera_id,
+            "frames_read": idx,
+            "frames_processed": processed,
+            "video_fps": round(fps, 2),
+            "person_detections": n_person_dets,
+            "quality_rejected_crops": n_quality_rejects,
+            "distinct_tracks": len(track_last_seen),
+            "identified_employees": sorted(identified),
+            "last_frame_with_a_person": last_frame_with_person,
+            "events_after_min_duration": int(len(df)),
+            "identity_enabled": fuser is not None,
+        })
+        log.info("pipeline stats for camera %s: %s", camera_id, stats_out)
+
     return df, annotated_path
 
 
@@ -400,8 +567,11 @@ def _checkin_bgr(img: np.ndarray, gallery: EmployeeGallery,
         return {"employee_id": face_match[0], "confidence": face_match[1], "method": "face"}
 
     # Fall back to detector → largest person crop → ReID.
+    # detect(), not track(): this runs on a single unrelated still, so there
+    # is no temporal continuity to exploit — and track() would mutate the
+    # shared ByteTrack state, corrupting whatever video is processed next.
     detector = get_detector()
-    dets = detector.track(img)
+    dets = detector.detect(img)
     persons = [d for d in dets if d["cls_name"] == "person"]
     if not persons:
         return {"employee_id": UNKNOWN_LABEL, "confidence": 0.0, "method": "none"}
@@ -594,6 +764,7 @@ def checkin_video_multi(
     det_conf: float = DEFAULT_DET_CONF,
     det_iou: float = DEFAULT_DET_IOU,
     session_date: Optional[str] = None,
+    debug_identity: bool = False,
 ) -> dict:
     """Identify EVERY distinct person appearing in a video — not just one.
 
@@ -634,9 +805,11 @@ def checkin_video_multi(
             stride=stride, max_frames=max_frames,
             det_conf=det_conf, det_iou=det_iou,
             session_date=session_date,
+            debug_identity=debug_identity,
         )
 
 
+@serialized_tracking
 def _checkin_video_multi_local(
     source: str,
     gallery: EmployeeGallery,
@@ -648,18 +821,17 @@ def _checkin_video_multi_local(
     det_conf: float = DEFAULT_DET_CONF,
     det_iou: float = DEFAULT_DET_IOU,
     session_date: Optional[str] = None,
+    debug_identity: bool = False,
 ) -> dict:
     """Internal: run checkin_video_multi on a local path or stream URI."""
+    # Tracker reset + exclusive access: see @serialized_tracking above.
     detector = get_detector()
     face_emb = get_face_embedder()
     reid_emb = get_reid_embedder()
 
-    # Reset ByteTrack state so this video starts with clean track IDs,
-    # same as _run_pipeline_local does for the zone/events path.
-    detector.reset_tracker()
-
     fuser = IdentityFuser(gallery, face_emb, reid_emb,
-                          face_thr=face_thr, reid_thr=reid_thr)
+                          face_thr=face_thr, reid_thr=reid_thr,
+                          debug=debug_identity)
 
     cap = cv2.VideoCapture(source if not str(source).isdigit() else int(source))
     if not cap.isOpened():
@@ -675,6 +847,13 @@ def _checkin_video_multi_local(
     # track_id -> list of body crops, capped, used at the end to build each
     # committed employee's daily ReID fingerprint (see daily_gallery.py).
     track_crops: dict = {}
+    # Tracks that were identified by an actual face match at least once.
+    # Only these seed daily fingerprints: a body-only identification is a
+    # provisional guess, and writing a guess into the daily bank would
+    # propagate it to every zone video processed for that date (match_reid
+    # prefers the daily bank), turning one soft mistake into a whole day of
+    # confidently wrong attendance data.
+    face_confirmed: set = set()
     # track_id -> (processed_idx, bbox) — feeds _find_relink_candidate(),
     # same spatiotemporal re-linking _run_pipeline_local uses (see there).
     track_last_seen: dict = {}
@@ -693,47 +872,62 @@ def _checkin_video_multi_local(
 
             native_h, native_w = frame.shape[:2]
             scale = _detection_scale(native_w, native_h)
+            frame_native = frame
             if scale != 1.0:
                 frame = cv2.resize(frame, _scaled_size(native_w, native_h, scale),
                                     interpolation=cv2.INTER_AREA)
             H, W = frame.shape[:2]
             dets = detector.track(frame, conf=det_conf, iou=det_iou)
+            person_dets = []
             for d in dets:
                 if d["cls_name"] != "person":
                     continue
-                x1, y1, x2, y2 = d["bbox"]
-                x1, y1 = max(0, x1), max(0, y1)
-                x2, y2 = min(W, x2), min(H, y2)
-                crop = frame[y1:y2, x1:x2]
+                crop = _identity_crop(frame_native, frame, d["bbox"], scale)
                 if crop.size == 0:
                     continue
+                person_dets.append((d, crop))
 
+            # Same frame-level resolution as the zone pipeline — see
+            # _resolve_identities. Doing this per detection instead would
+            # let one employee be matched to two people standing in the
+            # check-in queue at the same time, and this scan is exactly
+            # where that mistake is most expensive: its output seeds the
+            # whole day's ReID fingerprints.
+            labels, observations = _resolve_identities(
+                fuser, person_dets, processed, effective_fps,
+                track_last_seen, W, H,
+            )
+            obs_by_track = {o.track_id: o for o in observations}
+            for d, crop in person_dets:
                 track_id = d["track_id"]
-
-                if track_id not in track_last_seen and track_id not in fuser.committed:
-                    candidate = _find_relink_candidate(
-                        d["bbox"], processed, effective_fps, track_last_seen, fuser.committed,
-                    )
-                    if candidate is not None:
-                        fuser.adopt(track_id, candidate)
                 track_last_seen[track_id] = (processed, d["bbox"])
-
-                face_match = fuser.match_face(crop)
-                confidence = face_match[1] if face_match is not None else 0.0
-
-                # update() runs the actual face/ReID match again internally
-                # to drive the per-track committed vote — slightly redundant
-                # with match_face() above, but keeps this function a thin
-                # wrapper around the existing, already-tested fusion logic
-                # rather than re-implementing the commit rule here too.
-                name = fuser.update(track_id, crop)
+                name = labels.get(track_id, UNKNOWN_LABEL)
                 if name == UNKNOWN_LABEL:
                     continue
 
+                # Confidence reported to callers stays a face cosine
+                # similarity, so it means the same thing as
+                # checkin()/checkin_video()'s confidence — but it now comes
+                # from the observation already computed above instead of a
+                # second, redundant match_face() call per detection.
+                obs = obs_by_track.get(track_id)
+                face_cand = obs.candidate_for(name) if obs is not None else None
+                confidence = (face_cand.score
+                              if face_cand is not None and face_cand.method == "face"
+                              else 0.0)
                 prev = track_best.get(track_id)
                 if prev is None or confidence > prev[1]:
                     track_best[track_id] = (name, confidence)
+                if confidence > 0.0:
+                    face_confirmed.add(track_id)
 
+                # Only quality-passing crops are eligible to become part of
+                # the day's fingerprint — a truncated or motion-blurred crop
+                # baked into the daily bank poisons every zone video
+                # processed for that date, since match_reid prefers the
+                # daily bank over the enrollment gallery.
+                if obs is None or not obs.usable:
+                    continue
                 crops_so_far = track_crops.setdefault(track_id, [])
                 if len(crops_so_far) < MAX_DAILY_FINGERPRINT_CROPS:
                     crops_so_far.append(crop.copy())
@@ -772,17 +966,35 @@ def _checkin_video_multi_local(
     session_date = session_date or _date.today().isoformat()
     crops_by_employee: dict = {}
     for track_id, name in committed_tracks.items():
+        if track_id not in face_confirmed:
+            log.info("skipping daily fingerprint for %s (track %s): no face confirmation",
+                     name, track_id)
+            continue
         crops_by_employee.setdefault(name, []).extend(track_crops.get(track_id, []))
     for name, crops in crops_by_employee.items():
         if not crops:
             continue
-        vecs = reid_emb.embed_batch(crops)
+        # Normalised the same way query crops are (see IdentityFuser.observe)
+        # — a fingerprint built from raw crops and compared against
+        # illumination-normalised queries would sit in a slightly different
+        # region of embedding space and cost real similarity.
+        vecs = reid_emb.embed_batch([normalize_illumination(c) for c in crops])
         daily_gallery_store.save_fingerprint(session_date, name, vecs)
+
+    if debug_identity:
+        # The check-in scan is the root of the whole day's identity chain: it
+        # is the only place a face is reliably visible, and its output seeds
+        # every other camera's body matching. When zone cameras come back
+        # UNKNOWN, this log is the first place to look — it shows whether the
+        # face was ever matched here at all, and which crops became the
+        # fingerprint.
+        _write_identity_debug(fuser.debug_rows, Path(str(source)).stem, "checkin")
 
     stats["frames_processed"] = processed
     return {
         "matches": matches,
         "num_tracks": len(committed_tracks),
         "session_date": session_date,
+        "fingerprinted": sorted(crops_by_employee.keys()),
         **stats,
     }
